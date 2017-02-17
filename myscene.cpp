@@ -1,6 +1,9 @@
 #include "myscene.h"
 #include <iostream>
 
+enum SemNames{s_acquire_image, s_submit, num_sems};
+enum FenNames{f_submit, num_fences};
+
 MyScene::MyScene()
 {
 	initialize();
@@ -31,31 +34,36 @@ void MyScene::initialize()
 	vkAllocateCommandBuffers(VulkanEngine::get().getDevice(), &command_buffer_allocate_info, &m_command_buffer);
 	
 	VkFenceCreateInfo fence_create_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT};
-	vkCreateFence(VulkanEngine::get().getDevice(), &fence_create_info, VK_NULL_HANDLE, &m_submit_fence);
+	m_fences.resize(num_fences);
+	for(auto& f : m_fences)
+	{
+		vkCreateFence(VulkanEngine::get().getDevice(), &fence_create_info, VK_NULL_HANDLE, &f);
+	}
 	
 	VkSemaphoreCreateInfo sem_create_info{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, NULL, 0};
-	vkCreateSemaphore(VulkanEngine::get().getDevice(), &sem_create_info, VK_NULL_HANDLE, &m_sem_acquire_image);
-	vkCreateSemaphore(VulkanEngine::get().getDevice(), &sem_create_info, VK_NULL_HANDLE, &m_sem_submit);
+	m_semaphores.resize(num_sems);
+	for(auto& s : m_semaphores)
+	{
+		vkCreateSemaphore(VulkanEngine::get().getDevice(), &sem_create_info, VK_NULL_HANDLE, &s);
+	}
+	
 }
 
 void MyScene::destroy()
 {
-	if (m_submit_fence != VK_NULL_HANDLE)
+	for(auto& f : m_fences)
 	{
-		vkDestroyFence(VulkanEngine::get().getDevice(), m_submit_fence, VK_NULL_HANDLE);
-		m_submit_fence = VK_NULL_HANDLE;
+		vkDestroyFence(VulkanEngine::get().getDevice(), f, VK_NULL_HANDLE);
+		f = VK_NULL_HANDLE;
 	}
 	
-	if (m_sem_submit != VK_NULL_HANDLE)
+	for(auto& s : m_semaphores)
 	{
-		vkDestroySemaphore(VulkanEngine::get().getDevice(), m_sem_submit, VK_NULL_HANDLE);
-		m_sem_submit = VK_NULL_HANDLE;
-	}
-	
-	if (m_sem_acquire_image != VK_NULL_HANDLE)
-	{
-		vkDestroySemaphore(VulkanEngine::get().getDevice(), m_sem_acquire_image, VK_NULL_HANDLE);
-		m_sem_acquire_image = VK_NULL_HANDLE;
+		if (s != VK_NULL_HANDLE)
+		{
+			vkDestroySemaphore(VulkanEngine::get().getDevice(), s, VK_NULL_HANDLE);
+			s = VK_NULL_HANDLE;
+		}
 	}
 	
 	if (m_command_pool != VK_NULL_HANDLE)
@@ -86,7 +94,7 @@ void MyScene::render()
 	
 	VulkanEngine& e = VulkanEngine::get();
 	uint32_t image_index;
-	vkAcquireNextImageKHR(e.getDevice(), e.getSwapchain(), UINT64_MAX, m_sem_acquire_image, VK_NULL_HANDLE, &image_index);
+	vkAcquireNextImageKHR(e.getDevice(), e.getSwapchain(), UINT64_MAX, m_semaphores[s_acquire_image], VK_NULL_HANDLE, &image_index);
 	
 	VkCommandBufferBeginInfo command_buffer_begin_info{};
 	command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -94,8 +102,8 @@ void MyScene::render()
 	command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	command_buffer_begin_info.pInheritanceInfo = NULL;
 	
-	vkWaitForFences(e.getDevice(), 1, &m_submit_fence, VK_TRUE, UINT64_MAX);
-	vkResetFences(e.getDevice(), 1, &m_submit_fence);
+	vkWaitForFences(e.getDevice(), 1, &m_fences[f_submit], VK_TRUE, UINT64_MAX);
+	vkResetFences(e.getDevice(), 1, &m_fences[f_submit]);
 	
 	vkBeginCommandBuffer(m_command_buffer, &command_buffer_begin_info);
 	
@@ -148,12 +156,12 @@ void MyScene::render()
 	submit_info.commandBufferCount = 1;
 	submit_info.pCommandBuffers = &m_command_buffer;
 	submit_info.signalSemaphoreCount = 1;
-	submit_info.pSignalSemaphores = &m_sem_submit;
+	submit_info.pSignalSemaphores = &m_semaphores[s_submit];
 	submit_info.waitSemaphoreCount = 1;
-	submit_info.pWaitSemaphores = &m_sem_acquire_image;
+	submit_info.pWaitSemaphores = &m_semaphores[s_acquire_image];
 	submit_info.pWaitDstStageMask = submit_wait_flags;
 	
-	vkQueueSubmit(queue, 1, &submit_info, m_submit_fence);
+	vkQueueSubmit(queue, 1, &submit_info, m_fences[f_submit]);
 	
 	VkPresentInfoKHR present_info{};
 	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -163,7 +171,7 @@ void MyScene::render()
 	present_info.swapchainCount = 1;
 	present_info.pSwapchains = &e.getSwapchain();
 	present_info.waitSemaphoreCount = 1;
-	present_info.pWaitSemaphores = &m_sem_acquire_image;
+	present_info.pWaitSemaphores = &m_semaphores[s_acquire_image];
 	
 	vkQueuePresentKHR(queue, &present_info);
 }

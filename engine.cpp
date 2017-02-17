@@ -8,10 +8,6 @@
 
 using namespace std;
 
-///////////////////////////////////////////////////////////////////////////////////////////
-////////////////////					E N G I N E						///////////////////
-///////////////////////////////////////////////////////////////////////////////////////////
-
 VulkanEngine& VulkanEngine::get()
 {
 	static VulkanEngine m_ptr;
@@ -566,16 +562,21 @@ VkBool32 VKAPI_CALL DebugCallback(
 {
 	if (flags & VK_DEBUG_REPORT_ERROR_BIT_EXT)
 	{
-		//cout << "ERROR: \n" << pMessage << '\n';
-		//ErrorMessage()
+		std::string msg = "ERROR: \n";
+		msg += pMessage;
+		ErrorMessage(msg);
 	}
 	else if (flags & VK_DEBUG_REPORT_WARNING_BIT_EXT)
 	{
-		//cout << "WARNING: \n" << pMessage << '\n';
+		std::string msg = "WARNING: \n";
+		msg += pMessage;
+		ErrorMessage(msg);
 	}
 	else if (flags & VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT)
 	{
-		//cout << "PERFORMANCE WARNING: \n" << pMessage << '\n';
+		std::string msg = "PERFORMANCE WARNING: \n";
+		msg += pMessage;
+		ErrorMessage(msg);
 	}
 
 	return false;

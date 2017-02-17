@@ -33,10 +33,8 @@ private:
 	VkCommandBuffer m_command_buffer = VK_NULL_HANDLE;
 	VkRenderPass m_render_pass = VK_NULL_HANDLE;
 	
-	VkFence m_submit_fence = VK_NULL_HANDLE;
-	
-	VkSemaphore m_sem_acquire_image = VK_NULL_HANDLE;
-	VkSemaphore m_sem_submit = VK_NULL_HANDLE;
+	std::vector<VkFence> m_fences;
+	std::vector<VkSemaphore> m_semaphores;
 	
 	Timer m_timer;
 };
