@@ -237,9 +237,9 @@ bool VulkanEngine::InitSurfaceDependentObjects()
 
 void VulkanEngine::DeinitSurfaceDependentObjects()
 {
-	for (size_t i = 0; i < m_swapchain_image_views.size(); i++)
+	for (auto& siv : m_swapchain_image_views)
 	{
-		vkDestroyImageView(m_device, m_swapchain_image_views[i], VK_NULL_HANDLE);
+		vkDestroyImageView(m_device, siv, VK_NULL_HANDLE);
 	}
 	
 	m_swapchain_image_views.clear();
@@ -325,9 +325,18 @@ bool VulkanEngine::InitSwapchain()
 		return false;
 	}
 
-	for (size_t i = 0; i < present_modes.size(); i++)
+	/*for (size_t i = 0; i < present_modes.size(); i++)
 	{
 		if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+		{
+			present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+			break;
+		}
+	}*/
+
+	for (auto pm : present_modes)
+	{
+		if(pm == VK_PRESENT_MODE_MAILBOX_KHR)
 		{
 			present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
 			break;

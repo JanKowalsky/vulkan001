@@ -5,6 +5,7 @@ void Timer::reset() noexcept
 	m_paused = false;
 	m_baseTime = std::chrono::system_clock::now();
 	m_prevTime = m_baseTime;
+	m_frameStartTime = m_baseTime;
 	m_deltaTime = (std::chrono::duration<double>)0;
 	m_pausedTime = (std::chrono::duration<double>)0;
 	m_fps = 0;
@@ -34,37 +35,40 @@ bool Timer::isPaused() const noexcept
 
 Timer::Timer()
 {
-	//Initialize base time to current time instead of initializing it to 0, but Reset() should be called before using timer
-	m_baseTime = std::chrono::system_clock::now();
+	/*reset timer on init to initialize member fields
+	and allow use of timer right away without explicilty
+	calling reset*/
+	reset();
 }
 
 void Timer::tick() noexcept
 {
-	if (!m_paused)
+	if (m_paused)
+		return;
+		
+	m_currTime = std::chrono::system_clock::now();
+	m_deltaTime = (m_currTime - m_prevTime);
+
+	if ((std::chrono::duration<double>(m_currTime - m_frameStartTime)).count() >= 1.0)
 	{
-		m_currTime = std::chrono::system_clock::now();
-		m_deltaTime = (m_currTime - m_prevTime);
-
-		if ((std::chrono::duration<double>(m_currTime - m_frameStartTime)).count() >= 1.0)
-		{
-			m_fps = m_frameCount;
-			m_frameCount = 0;
-			m_frameStartTime = m_currTime;
-		}
-		else
-		{
-			m_frameCount++;
-		}
-
-		m_prevTime = m_currTime;
+		m_fps = m_frameCount;
+		m_frameCount = 0;
+		m_frameStartTime = m_currTime;
 	}
+	else
+	{
+		m_frameCount++;
+	}
+
+	m_prevTime = m_currTime;
 }
 
 void Timer::start() noexcept
 {
 	m_paused = false;
+	m_currTime = std::chrono::system_clock::now();
 	m_pausedTime += std::chrono::duration<double>(m_currTime - m_pauseStartTime);
-	m_prevTime = std::chrono::system_clock::now();
+	m_prevTime = m_currTime;
 	m_frameStartTime = m_currTime;
 	m_deltaTime = (std::chrono::duration<double>)0;
 }
