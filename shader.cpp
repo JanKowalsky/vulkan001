@@ -8,12 +8,12 @@ Shader::Shader(std::string pathname)
 	VkResult res;
 	
 	//open file and go to the end
-	std::ifstream file("myfile", std::ios::binary | std::ios::ate);
+	std::ifstream file(pathname, std::ios::binary | std::ios::ate);
 	//get end position to get file size
 	std::streamsize size = file.tellg();
 	//go back to beginning
 	file.seekg(0, std::ios::beg);
-
+	
 	std::vector<char> buffer(size);
 	file.read(buffer.data(), size);
 	
@@ -34,7 +34,11 @@ Shader::Shader(std::string pathname)
 
 Shader::~Shader()
 {
-	vkDestroyShaderModule(VulkanEngine::get().getDevice(), m_module, VK_NULL_HANDLE);
+	if(m_module != VK_NULL_HANDLE)
+	{
+		vkDestroyShaderModule(VulkanEngine::get().getDevice(), m_module, VK_NULL_HANDLE);
+		m_module = VK_NULL_HANDLE;
+	}
 }
 
 VkShaderModule Shader::getModule()

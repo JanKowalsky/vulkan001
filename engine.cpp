@@ -268,7 +268,6 @@ bool VulkanEngine::InitSwapchain()
 
 	VkSurfaceFormatKHR surface_format;
 	VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-	VkExtent2D image_extent;
 	uint32_t image_count;
 
 	res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_physical_device, m_surface, &surface_capabilities);
@@ -280,16 +279,13 @@ bool VulkanEngine::InitSwapchain()
 
 	if (surface_capabilities.currentExtent.width == UINT32_MAX)
 	{
-		image_extent.width = m_window->getWidth();
-		image_extent.height = m_window->getHeight();
+		m_surface_extent.width = m_window->getWidth();
+		m_surface_extent.height = m_window->getHeight();
 	}
 	else
 	{
-		image_extent = surface_capabilities.currentExtent;
+		m_surface_extent = surface_capabilities.currentExtent;
 	}
-
-	m_surface_size_x = image_extent.width;
-	m_surface_size_y = image_extent.height;
 
 	image_count = surface_capabilities.minImageCount + 1;
 
@@ -325,15 +321,6 @@ bool VulkanEngine::InitSwapchain()
 		return false;
 	}
 
-	/*for (size_t i = 0; i < present_modes.size(); i++)
-	{
-		if (present_modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
-		{
-			present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
-			break;
-		}
-	}*/
-
 	for (auto pm : present_modes)
 	{
 		if(pm == VK_PRESENT_MODE_MAILBOX_KHR)
@@ -351,7 +338,7 @@ bool VulkanEngine::InitSwapchain()
 	swapchain_create_info.imageArrayLayers = 1;
 	swapchain_create_info.imageColorSpace = surface_format.colorSpace;
 	swapchain_create_info.imageFormat = surface_format.format;
-	swapchain_create_info.imageExtent = image_extent;
+	swapchain_create_info.imageExtent = m_surface_extent;
 	swapchain_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	swapchain_create_info.imageUsage = VK_IMAGE_USAGE_STORAGE_BIT;
 	swapchain_create_info.minImageCount = image_count;
@@ -434,6 +421,16 @@ const std::vector<VkImageView>& VulkanEngine::getSwapchainImageViews() const noe
 const std::vector<VkImage>& VulkanEngine::getSwapchainImages() const noexcept
 {
 	return m_swapchain_images;
+}
+
+VkFormat VulkanEngine::getSurfaceFormat() const noexcept
+{
+	return m_surface_format;
+}
+
+VkExtent2D VulkanEngine::getSurfaceExtent() const noexcept
+{
+	return m_surface_extent;
 }
 
 uint32_t VulkanEngine::getQueueFamilyIndexGeneral()

@@ -30,6 +30,9 @@ public:
 	const VkSwapchainKHR& getSwapchain() const noexcept;
 	const std::vector<VkImageView>& getSwapchainImageViews()const noexcept;
 	const std::vector<VkImage>& getSwapchainImages() const noexcept;
+	
+	VkFormat getSurfaceFormat() const noexcept;
+	VkExtent2D getSurfaceExtent() const noexcept;
 	uint32_t getQueueFamilyIndexGeneral();
 	uint32_t getQueueFamilyIndexTransfer();
 	
@@ -87,8 +90,7 @@ private:
 	//SURFACE AND SWAPCHAIN--------------------------------------------------------
 	VkSurfaceKHR m_surface = VK_NULL_HANDLE;
 
-	uint32_t m_surface_size_x = 0;
-	uint32_t m_surface_size_y = 0;
+	VkExtent2D m_surface_extent;
 	VkFormat m_surface_format;
 
 	VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;

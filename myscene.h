@@ -29,8 +29,14 @@ private:
 	void initialize();
 	void destroy();
 
+	void initSynchronizationObjects();
+	void initCommandBuffers();
+	void initRenderPass();
+	void initGraphicsPipeline();
+
 	VkCommandPool m_command_pool = VK_NULL_HANDLE;
-	VkCommandBuffer m_command_buffer = VK_NULL_HANDLE;
+	std::vector<VkCommandBuffer> m_command_buffers;
+	VkPipeline m_graphics_pipeline = VK_NULL_HANDLE;
 	VkRenderPass m_render_pass = VK_NULL_HANDLE;
 	
 	std::vector<VkFence> m_fences;
