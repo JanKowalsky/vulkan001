@@ -425,6 +425,11 @@ const std::vector<VkImage>& VulkanEngine::getSwapchainImages() const noexcept
 	return m_swapchain_images;
 }
 
+const VkPhysicalDeviceMemoryProperties& VulkanEngine::getPhyDevMemProps() const noexcept
+{
+	return m_physical_device_memory_properties;
+}
+
 VkFormat VulkanEngine::getSurfaceFormat() const noexcept
 {
 	return m_surface_format;

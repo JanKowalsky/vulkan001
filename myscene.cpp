@@ -1,9 +1,26 @@
 #include "myscene.h"
 #include "shader.h"
 #include <iostream>
+#include <cstdlib>
+
+constexpr const uint32_t res_x = 1920;
+constexpr const uint32_t res_y = 1080;
 
 enum SemNames{s_acquire_image, s_submit, num_sems};
 enum FenNames{f_submit, num_fences};
+
+int32_t findMemoryTypeIndex(uint32_t memory_type_bits, bool host_visible)
+{
+	const VkPhysicalDeviceMemoryProperties& props = VulkanEngine::get().getPhyDevMemProps();
+	
+	for(size_t i = 0; i < props.memoryTypeCount; i++)
+	{
+		if((memory_type_bits & (1 << i)) && (!host_visible || (props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)))
+			return i;
+	}
+	
+	return -1;
+}
 
 MyScene::MyScene()
 {
@@ -16,16 +33,22 @@ MyScene::~MyScene()
 }
 
 void MyScene::initialize()
-{
+{	
 	vkGetDeviceQueue(VulkanEngine::get().getDevice(), VulkanEngine::get().getQueueFamilyIndexGeneral(), 0, &m_queue);
 	
 	initSynchronizationObjects();
 	initCommandBuffers();
+	initVertexBuffer();
+	initDescriptorSets();
+	
 	initSurfaceDependentObjects();
 }
 
 void MyScene::initSurfaceDependentObjects()
 {
+	float ratio = (float)VulkanEngine::get().getSurfaceExtent().width / (float)VulkanEngine::get().getSurfaceExtent().height;
+	m_camera = std::make_unique<Camera>(ratio, 1.0f, 1000.0f, M_PI_2);
+	
 	initRenderTargets();
 	initGraphicsPipeline();
 }
@@ -33,6 +56,12 @@ void MyScene::initSurfaceDependentObjects()
 void MyScene::destroySurfaceDependentObjects()
 {
 	VkDevice d = VulkanEngine::get().getDevice();
+	
+	if(m_pipeline_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyPipelineLayout(d, m_pipeline_layout, VK_NULL_HANDLE);
+		m_pipeline_layout = VK_NULL_HANDLE;
+	}
 	
 	if (m_graphics_pipeline != VK_NULL_HANDLE)
 	{
@@ -120,6 +149,8 @@ void MyScene::initCommandBuffers()
 
 void MyScene::initRenderTargets()
 {
+	/*---Creating render pass---*/
+	
 	VkAttachmentDescription at_desc{};
 	at_desc.flags = 0;
 	at_desc.format = VulkanEngine::get().getSurfaceFormat();
@@ -174,7 +205,7 @@ void MyScene::initRenderTargets()
 	
 	/*Specify clear values used for each framebuffer*/
 	std::vector<VkClearValue> cv = {
-			{VkClearColorValue{1, 0, 0, 0}}
+			{VkClearColorValue{0, 0, 0, 0}}
 		};
 	
 	/*Specify render pass begin info fields, which are identical for each framebuffer,
@@ -191,7 +222,7 @@ void MyScene::initRenderTargets()
 	/*Creting a render target structure for each swapchain image*/
 	m_render_targets.resize(VulkanEngine::get().getSwapchainImageViews().size());
 	
-	/*For each render target*/
+	/*For each render target...*/
 	for(size_t i = 0; i < m_render_targets.size(); i++)
 	{
 		/*Specify the attachment for each framebuffer as a different swapchain image view*/
@@ -199,7 +230,7 @@ void MyScene::initRenderTargets()
 		/*Create a framebuffer for given render target*/
 		vkCreateFramebuffer(VulkanEngine::get().getDevice(), &frambuffer_create_info, VK_NULL_HANDLE, &m_render_targets[i].framebuffer);
 		
-		/*Set the same clear values for each render target*/
+		/*Set the same clear values (defined earlier) for each render target*/
 		m_render_targets[i].clear_values = cv;
 		
 		/*Set the render pass for given render target*/
@@ -211,6 +242,137 @@ void MyScene::initRenderTargets()
 		m_render_targets[i].begin_info.framebuffer = m_render_targets[i].framebuffer;
 		m_render_targets[i].begin_info.pClearValues = m_render_targets[i].clear_values.data();
 	}
+}
+
+void MyScene::initVertexBuffer()
+{
+	VulkanEngine& e = VulkanEngine::get();
+	
+	/*---Creating buffer---*/
+	
+	/*Specify usage as storage texel buffer to store formatted vertex data,
+	that can be read and written inside shaders*/
+	VkBufferCreateInfo vb_create_info{};
+	vb_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	vb_create_info.pNext = NULL;
+	vb_create_info.flags = 0;
+	vb_create_info.size = sizeof(Vertex) * res_x * res_y;
+	vb_create_info.usage = VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
+	vb_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	vb_create_info.queueFamilyIndexCount = 1;
+	uint32_t qfi = e.getQueueFamilyIndexGeneral();
+	vb_create_info.pQueueFamilyIndices = &qfi;
+	
+	vkCreateBuffer(e.getDevice(), &vb_create_info, VK_NULL_HANDLE, &m_vertex_buffer);
+	
+	/*Get memory requirements for buffer*/
+	VkMemoryRequirements vb_mem_req;
+	vkGetBufferMemoryRequirements(e.getDevice(), m_vertex_buffer, &vb_mem_req);
+	
+	VkMemoryAllocateInfo vb_mem_alloc_info{};
+	vb_mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	vb_mem_alloc_info.pNext = NULL;
+	vb_mem_alloc_info.allocationSize = vb_mem_req.size;
+	vb_mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(vb_mem_req.memoryTypeBits, true);
+	
+	/*Allocate memory for the buffer*/
+	vkAllocateMemory(e.getDevice(), &vb_mem_alloc_info, VK_NULL_HANDLE, &m_vertex_buffer_memory);
+	
+	/*Map buffer memory*/
+	Vertex* mem;
+	vkMapMemory(e.getDevice(), m_vertex_buffer_memory, 0, VK_WHOLE_SIZE, 0, (void**)&mem);
+	
+	constexpr const uint32_t numVerts = res_x * res_y;
+	constexpr const float x_bound = 500.0f;
+	constexpr const float y_bound = 500.0f;
+	constexpr const float z_bound = 500.0f;
+	
+	/*Generate random initial location for each vertex, within specified bounds*/
+	for(size_t v = 0; v < numVerts; v++)
+	{
+		mem[v].pos.x = (2*float((float)std::rand() / (float)RAND_MAX) - 1.0f) * x_bound;
+		mem[v].pos.y = (2*float((float)std::rand() / (float)RAND_MAX) - 1.0f) * y_bound;
+		mem[v].pos.z = (2*float((float)std::rand() / (float)RAND_MAX) - 1.0f) * z_bound;
+	}
+	
+	/*Unmap buffer memory*/
+	vkUnmapMemory(e.getDevice(), m_vertex_buffer_memory);
+	
+	/*Bind memory to the buffer*/
+	vkBindBufferMemory(e.getDevice(), m_vertex_buffer, m_vertex_buffer_memory, 0);
+	
+	/*---Create vertex buffer view---*/
+	
+	VkBufferViewCreateInfo vb_view_create_info{};
+	vb_view_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO;
+	vb_view_create_info.pNext = NULL;
+	vb_view_create_info.flags = 0;
+	vb_view_create_info.buffer = m_vertex_buffer;
+	vb_view_create_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+	vb_view_create_info.offset = 0;
+	vb_view_create_info.range = VK_WHOLE_SIZE;
+	
+	vkCreateBufferView(e.getDevice(), &vb_view_create_info, VK_NULL_HANDLE, &m_vertex_buffer_view);
+}
+
+void MyScene::initDescriptorSets()
+{
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	/*---Create descriptor set layout---*/
+	
+	VkDescriptorSetLayoutBinding vb_binding{};
+	vb_binding.binding = 0;
+	vb_binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+	vb_binding.descriptorCount = 1;
+	vb_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	vb_binding.pImmutableSamplers = NULL;
+	
+	VkDescriptorSetLayoutCreateInfo desc_set_layout_create_info{};
+	desc_set_layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	desc_set_layout_create_info.pNext = NULL;
+	desc_set_layout_create_info.flags = 0;
+	desc_set_layout_create_info.bindingCount = 1;
+	desc_set_layout_create_info.pBindings = &vb_binding;
+	
+	vkCreateDescriptorSetLayout(d, &desc_set_layout_create_info, VK_NULL_HANDLE, &m_descriptor_set_layout);
+	
+	/*---Create descriptor pool---*/
+	
+	VkDescriptorPoolSize pool_size{};
+	pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+	pool_size.descriptorCount = 1;
+	
+	VkDescriptorPoolCreateInfo desc_pool_create_info{};
+	desc_pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	desc_pool_create_info.pNext = NULL;
+	desc_pool_create_info.flags = 0;
+	desc_pool_create_info.maxSets = 1;
+	desc_pool_create_info.poolSizeCount = 1;
+	desc_pool_create_info.pPoolSizes = &pool_size;
+	
+	vkCreateDescriptorPool(d, &desc_pool_create_info, VK_NULL_HANDLE, &m_descriptor_pool);
+	
+	VkDescriptorSetAllocateInfo desc_set_allocate_info{};
+	desc_set_allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	desc_set_allocate_info.pNext = NULL;
+	desc_set_allocate_info.descriptorPool = m_descriptor_pool;
+	desc_set_allocate_info.descriptorSetCount = 1;
+	desc_set_allocate_info.pSetLayouts = &m_descriptor_set_layout;
+	
+	vkAllocateDescriptorSets(d, &desc_set_allocate_info, &m_descriptor_set);
+	
+	VkWriteDescriptorSet ds_write{};
+	ds_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	ds_write.pNext = NULL;
+	ds_write.dstSet = m_descriptor_set;
+	ds_write.dstBinding = 0;
+	ds_write.dstArrayElement = 0;
+	ds_write.descriptorCount = 1;
+	ds_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+	ds_write.pTexelBufferView = &m_vertex_buffer_view;
+	
+	vkUpdateDescriptorSets(d, 1, &ds_write, 0, NULL);
 }
 
 void MyScene::initGraphicsPipeline()
@@ -236,26 +398,27 @@ void MyScene::initGraphicsPipeline()
 	fs_stage.pName = "main";
 	fs_stage.pSpecializationInfo = NULL;
 	
-	VkPipelineShaderStageCreateInfo shader_stages[] = {vs_stage, fs_stage};
+	std::vector<VkPipelineShaderStageCreateInfo> shader_stages = {vs_stage, fs_stage};
 	
-	VkVertexInputBindingDescription v_in_bind_desc[] =
+	/*std::vector<VkVertexInputBindingDescription> v_in_bind_desc =
 	{
-		{0, 12, VK_VERTEX_INPUT_RATE_VERTEX}
+		{0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX},
 	};
 	
-	VkVertexInputAttributeDescription v_in_att_desc[] = 
+	std::vector<VkVertexInputAttributeDescription> v_in_att_desc = 
 	{
-		{0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0}
-	};
+		{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
+		{1, 0, VK_FORMAT_R32G32B32_SFLOAT, 4*sizeof(float)}
+	};*/
 	
 	VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info{};
 	vertex_input_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 	vertex_input_state_create_info.pNext = NULL;
 	vertex_input_state_create_info.flags = 0;
-	vertex_input_state_create_info.vertexBindingDescriptionCount = 1;
-	vertex_input_state_create_info.pVertexBindingDescriptions = v_in_bind_desc;
-	vertex_input_state_create_info.vertexAttributeDescriptionCount = 1;
-	vertex_input_state_create_info.pVertexAttributeDescriptions = v_in_att_desc;
+	vertex_input_state_create_info.vertexBindingDescriptionCount = 0;//v_in_bind_desc.size();
+	vertex_input_state_create_info.pVertexBindingDescriptions = NULL;//v_in_bind_desc.data();
+	vertex_input_state_create_info.vertexAttributeDescriptionCount = 0;//v_in_att_desc.size();
+	vertex_input_state_create_info.pVertexAttributeDescriptions = NULL;//v_in_att_desc.data();
 	
 	VkPipelineInputAssemblyStateCreateInfo input_assembly_state{};
 	input_assembly_state.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -322,20 +485,19 @@ void MyScene::initGraphicsPipeline()
 	layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	layout_info.pNext = NULL;
 	layout_info.flags = 0;
-	layout_info.setLayoutCount = 0;
-	layout_info.pSetLayouts = NULL;
+	layout_info.setLayoutCount = 1;
+	layout_info.pSetLayouts = &m_descriptor_set_layout;
 	layout_info.pushConstantRangeCount = 0;
 	layout_info.pPushConstantRanges = NULL;
 	
-	VkPipelineLayout layout;
-	vkCreatePipelineLayout(VulkanEngine::get().getDevice(), &layout_info, VK_NULL_HANDLE, &layout);
+	vkCreatePipelineLayout(VulkanEngine::get().getDevice(), &layout_info, VK_NULL_HANDLE, &m_pipeline_layout);
 	
 	VkGraphicsPipelineCreateInfo g_pipeline_create_info{};
 	g_pipeline_create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
 	g_pipeline_create_info.pNext = NULL;
 	g_pipeline_create_info.flags = 0;
-	g_pipeline_create_info.stageCount = 2;
-	g_pipeline_create_info.pStages = shader_stages;
+	g_pipeline_create_info.stageCount = shader_stages.size();
+	g_pipeline_create_info.pStages = shader_stages.data();
 	g_pipeline_create_info.pVertexInputState = &vertex_input_state_create_info;
 	g_pipeline_create_info.pInputAssemblyState = &input_assembly_state;
 	g_pipeline_create_info.pTessellationState = NULL;
@@ -345,15 +507,13 @@ void MyScene::initGraphicsPipeline()
 	g_pipeline_create_info.pDepthStencilState = NULL;
 	g_pipeline_create_info.pColorBlendState = &blend_state;
 	g_pipeline_create_info.pDynamicState = NULL;
-	g_pipeline_create_info.layout = layout;
+	g_pipeline_create_info.layout = m_pipeline_layout;
 	g_pipeline_create_info.renderPass = m_render_pass;
 	g_pipeline_create_info.subpass = 0;
 	g_pipeline_create_info.basePipelineHandle = VK_NULL_HANDLE;
 	g_pipeline_create_info.basePipelineIndex = -1;
 	
 	vkCreateGraphicsPipelines(VulkanEngine::get().getDevice(), VK_NULL_HANDLE, 1, &g_pipeline_create_info, VK_NULL_HANDLE, &m_graphics_pipeline);
-	
-	vkDestroyPipelineLayout(VulkanEngine::get().getDevice(), layout, VK_NULL_HANDLE);
 }
 
 void MyScene::destroy()
@@ -368,6 +528,36 @@ void MyScene::destroy()
 	{
 		vkDestroyCommandPool(d, m_command_pool, VK_NULL_HANDLE);
 		m_command_pool = VK_NULL_HANDLE;
+	}
+	
+	if(m_vertex_buffer_view != VK_NULL_HANDLE)
+	{
+		vkDestroyBufferView(d, m_vertex_buffer_view, VK_NULL_HANDLE);
+		m_vertex_buffer_view = VK_NULL_HANDLE;
+	}
+	
+	if(m_vertex_buffer != VK_NULL_HANDLE)
+	{
+		vkDestroyBuffer(d, m_vertex_buffer, VK_NULL_HANDLE);
+		m_vertex_buffer = VK_NULL_HANDLE;
+	}
+	
+	if(m_vertex_buffer_memory != VK_NULL_HANDLE)
+	{
+		vkFreeMemory(d, m_vertex_buffer_memory, VK_NULL_HANDLE);
+		m_vertex_buffer_memory = VK_NULL_HANDLE;
+	}
+	
+	if(m_descriptor_set != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorPool(d, m_descriptor_pool, VK_NULL_HANDLE);
+		m_descriptor_pool = VK_NULL_HANDLE;
+	}
+	
+	if(m_descriptor_set_layout != VK_NULL_HANDLE)
+	{
+		vkDestroyDescriptorSetLayout(d, m_descriptor_set_layout, VK_NULL_HANDLE);
+		m_descriptor_set_layout = VK_NULL_HANDLE;
 	}
 }
 
@@ -403,9 +593,13 @@ void MyScene::render()
 	
 	vkBeginCommandBuffer(m_command_buffers[image_index], &command_buffer_begin_info);
 	
-	//vkCmdBindPipeline(m_command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
+	vkCmdBindPipeline(m_command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
+	
+	vkCmdBindDescriptorSets(m_command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout, 0, 1, &m_descriptor_set, 0, NULL);
 	
 		vkCmdBeginRenderPass(m_command_buffers[image_index], &m_render_targets[image_index].begin_info, VK_SUBPASS_CONTENTS_INLINE);
+	
+		vkCmdDraw(m_command_buffers[image_index], res_x*res_y, 1, 0, 0);
 	
 		vkCmdEndRenderPass(m_command_buffers[image_index]);
 	

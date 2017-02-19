@@ -1,8 +1,17 @@
 #ifndef MYSCENE_H
 #define MYSCENE_H
 
-#include "engine.h"
 #include <vector>
+#include <memory>
+
+#include "engine.h"
+#include "vulkan_math.h"
+#include "camera.h"
+
+struct Vertex
+{
+	glm::vec3 pos;
+};
 
 struct RenderTarget
 {
@@ -46,6 +55,8 @@ private:
 	void initCommandBuffers();
 	void initRenderTargets();
 	void initGraphicsPipeline();
+	void initVertexBuffer();
+	void initDescriptorSets();
 
 	/*---Surface Independent---*/
 	VkCommandPool m_command_pool = VK_NULL_HANDLE;
@@ -56,10 +67,21 @@ private:
 	
 	VkQueue m_queue = VK_NULL_HANDLE;
 	
+	VkBuffer m_vertex_buffer = VK_NULL_HANDLE;
+	VkBufferView m_vertex_buffer_view = VK_NULL_HANDLE;
+	VkDeviceMemory m_vertex_buffer_memory = VK_NULL_HANDLE;
+	
+	VkDescriptorSetLayout m_descriptor_set_layout = VK_NULL_HANDLE;
+	VkDescriptorPool m_descriptor_pool = VK_NULL_HANDLE;
+	VkDescriptorSet m_descriptor_set = VK_NULL_HANDLE;
+	
 	/*---Surface Dependent---*/
 	VkRenderPass m_render_pass = VK_NULL_HANDLE;
 	std::vector<RenderTarget> m_render_targets;
+	VkPipelineLayout m_pipeline_layout;
 	VkPipeline m_graphics_pipeline = VK_NULL_HANDLE;
+	
+	std::unique_ptr<Camera> m_camera;
 	
 	/*---Other---*/
 	Timer m_timer;

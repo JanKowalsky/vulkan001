@@ -30,6 +30,7 @@ public:
 	const VkSwapchainKHR& getSwapchain() const noexcept;
 	const std::vector<VkImageView>& getSwapchainImageViews()const noexcept;
 	const std::vector<VkImage>& getSwapchainImages() const noexcept;
+	const VkPhysicalDeviceMemoryProperties& getPhyDevMemProps() const noexcept;
 	
 	VkFormat getSurfaceFormat() const noexcept;
 	VkExtent2D getSurfaceExtent() const noexcept;
