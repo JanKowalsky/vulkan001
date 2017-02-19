@@ -4,6 +4,14 @@
 #include "engine.h"
 #include <vector>
 
+struct RenderTarget
+{
+	VkRenderPass render_pass;
+	VkFramebuffer framebuffer;
+	VkRenderPassBeginInfo begin_info;
+	std::vector<VkClearValue> clear_values;
+};
+
 class MyScene : public Scene, public InputManager
 {
 
@@ -28,20 +36,32 @@ public:
 private:
 	void initialize();
 	void destroy();
+	
+	void initSurfaceDependentObjects();
+	void destroySurfaceDependentObjects();
 
 	void initSynchronizationObjects();
+	void destroySynchronizationObjects();
+	
 	void initCommandBuffers();
-	void initRenderPass();
+	void initRenderTargets();
 	void initGraphicsPipeline();
 
+	/*---Surface Independent---*/
 	VkCommandPool m_command_pool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> m_command_buffers;
-	VkPipeline m_graphics_pipeline = VK_NULL_HANDLE;
-	VkRenderPass m_render_pass = VK_NULL_HANDLE;
 	
 	std::vector<VkFence> m_fences;
 	std::vector<VkSemaphore> m_semaphores;
 	
+	VkQueue m_queue = VK_NULL_HANDLE;
+	
+	/*---Surface Dependent---*/
+	VkRenderPass m_render_pass = VK_NULL_HANDLE;
+	std::vector<RenderTarget> m_render_targets;
+	VkPipeline m_graphics_pipeline = VK_NULL_HANDLE;
+	
+	/*---Other---*/
 	Timer m_timer;
 };
 

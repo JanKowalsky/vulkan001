@@ -17,10 +17,43 @@ MyScene::~MyScene()
 
 void MyScene::initialize()
 {
+	vkGetDeviceQueue(VulkanEngine::get().getDevice(), VulkanEngine::get().getQueueFamilyIndexGeneral(), 0, &m_queue);
+	
 	initSynchronizationObjects();
 	initCommandBuffers();
-	initRenderPass();
+	initSurfaceDependentObjects();
+}
+
+void MyScene::initSurfaceDependentObjects()
+{
+	initRenderTargets();
 	initGraphicsPipeline();
+}
+
+void MyScene::destroySurfaceDependentObjects()
+{
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	if (m_graphics_pipeline != VK_NULL_HANDLE)
+	{
+		vkDestroyPipeline(d, m_graphics_pipeline, VK_NULL_HANDLE);
+		m_graphics_pipeline = VK_NULL_HANDLE;
+	}
+	
+	for(auto& rt : m_render_targets)
+	{		
+		if(rt.framebuffer != VK_NULL_HANDLE)
+		{
+			vkDestroyFramebuffer(d, rt.framebuffer, VK_NULL_HANDLE);
+			rt.framebuffer = VK_NULL_HANDLE;
+		}
+	}
+	
+	if (m_render_pass != VK_NULL_HANDLE)
+	{
+		vkDestroyRenderPass(d, m_render_pass, VK_NULL_HANDLE);
+		m_render_pass = VK_NULL_HANDLE;
+	}
 }
 
 void MyScene::initSynchronizationObjects()
@@ -39,6 +72,26 @@ void MyScene::initSynchronizationObjects()
 	for(auto& s : m_semaphores)
 	{
 		vkCreateSemaphore(VulkanEngine::get().getDevice(), &sem_create_info, VK_NULL_HANDLE, &s);
+	}
+}
+
+void MyScene::destroySynchronizationObjects()
+{
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	for(auto& f : m_fences)
+	{
+		vkDestroyFence(d, f, VK_NULL_HANDLE);
+		f = VK_NULL_HANDLE;
+	}
+	
+	for(auto& s : m_semaphores)
+	{
+		if (s != VK_NULL_HANDLE)
+		{
+			vkDestroySemaphore(d, s, VK_NULL_HANDLE);
+			s = VK_NULL_HANDLE;
+		}
 	}
 }
 
@@ -65,7 +118,7 @@ void MyScene::initCommandBuffers()
 	vkAllocateCommandBuffers(VulkanEngine::get().getDevice(), &command_buffer_allocate_info, m_command_buffers.data());
 }
 
-void MyScene::initRenderPass()
+void MyScene::initRenderTargets()
 {
 	VkAttachmentDescription at_desc{};
 	at_desc.flags = 0;
@@ -73,8 +126,6 @@ void MyScene::initRenderPass()
 	at_desc.samples = VK_SAMPLE_COUNT_1_BIT;
 	at_desc.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	at_desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	at_desc.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	at_desc.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
 	at_desc.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	at_desc.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 	
@@ -107,6 +158,59 @@ void MyScene::initRenderPass()
 	render_pass_create_info.pDependencies = NULL;
 	
 	vkCreateRenderPass(VulkanEngine::get().getDevice(), &render_pass_create_info, VK_NULL_HANDLE, &m_render_pass);
+	
+	/*---Creating framebuffers---*/
+	/*Create a set of identical framebuffers, one for each swapchain image*/
+	
+	VkFramebufferCreateInfo frambuffer_create_info{};
+	frambuffer_create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+	frambuffer_create_info.pNext = NULL;
+	frambuffer_create_info.flags = 0;
+	frambuffer_create_info.renderPass = m_render_pass;
+	frambuffer_create_info.attachmentCount = 1;
+	frambuffer_create_info.width = VulkanEngine::get().getSurfaceExtent().width;
+	frambuffer_create_info.height = VulkanEngine::get().getSurfaceExtent().height;
+	frambuffer_create_info.layers = 1;
+	
+	/*Specify clear values used for each framebuffer*/
+	std::vector<VkClearValue> cv = {
+			{VkClearColorValue{1, 0, 0, 0}}
+		};
+	
+	/*Specify render pass begin info fields, which are identical for each framebuffer,
+	specify the variant ones later, per framebuffer*/
+	
+	VkRenderPassBeginInfo render_pass_begin_info{};
+	render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+	render_pass_begin_info.pNext = NULL;
+	render_pass_begin_info.renderPass = m_render_pass;
+	render_pass_begin_info.renderArea.extent = VulkanEngine::get().getSurfaceExtent();
+	render_pass_begin_info.renderArea.offset = VkOffset2D{0,0};
+	render_pass_begin_info.clearValueCount = cv.size();
+	
+	/*Creting a render target structure for each swapchain image*/
+	m_render_targets.resize(VulkanEngine::get().getSwapchainImageViews().size());
+	
+	/*For each render target*/
+	for(size_t i = 0; i < m_render_targets.size(); i++)
+	{
+		/*Specify the attachment for each framebuffer as a different swapchain image view*/
+		frambuffer_create_info.pAttachments = &VulkanEngine::get().getSwapchainImageViews()[i];
+		/*Create a framebuffer for given render target*/
+		vkCreateFramebuffer(VulkanEngine::get().getDevice(), &frambuffer_create_info, VK_NULL_HANDLE, &m_render_targets[i].framebuffer);
+		
+		/*Set the same clear values for each render target*/
+		m_render_targets[i].clear_values = cv;
+		
+		/*Set the render pass for given render target*/
+		m_render_targets[i].render_pass = m_render_pass;
+		
+		/*Set the render pass begin info for each render target
+		and set the variant fields specifically*/
+		m_render_targets[i].begin_info = render_pass_begin_info;
+		m_render_targets[i].begin_info.framebuffer = m_render_targets[i].framebuffer;
+		m_render_targets[i].begin_info.pClearValues = m_render_targets[i].clear_values.data();
+	}
 }
 
 void MyScene::initGraphicsPipeline()
@@ -256,32 +360,9 @@ void MyScene::destroy()
 {
 	VkDevice d = VulkanEngine::get().getDevice();
 	
-	for(auto& f : m_fences)
-	{
-		vkDestroyFence(d, f, VK_NULL_HANDLE);
-		f = VK_NULL_HANDLE;
-	}
+	destroySynchronizationObjects();
 	
-	for(auto& s : m_semaphores)
-	{
-		if (s != VK_NULL_HANDLE)
-		{
-			vkDestroySemaphore(d, s, VK_NULL_HANDLE);
-			s = VK_NULL_HANDLE;
-		}
-	}
-	
-	if (m_graphics_pipeline != VK_NULL_HANDLE)
-	{
-		vkDestroyPipeline(d, m_graphics_pipeline, VK_NULL_HANDLE);
-		m_graphics_pipeline = VK_NULL_HANDLE;
-	}
-	
-	if (m_render_pass != VK_NULL_HANDLE)
-	{
-		vkDestroyRenderPass(d, m_render_pass, VK_NULL_HANDLE);
-		m_render_pass = VK_NULL_HANDLE;
-	}
+	destroySurfaceDependentObjects();
 	
 	if (m_command_pool != VK_NULL_HANDLE)
 	{
@@ -302,13 +383,12 @@ Timer& MyScene::getTimer()
 
 void MyScene::onResize()
 {
-	
+	destroySurfaceDependentObjects();
+	initSurfaceDependentObjects();
 }
 
 void MyScene::render()
-{
-	return;
-	
+{	
 	VulkanEngine& e = VulkanEngine::get();
 	uint32_t image_index;
 	vkAcquireNextImageKHR(e.getDevice(), e.getSwapchain(), UINT64_MAX, m_semaphores[s_acquire_image], VK_NULL_HANDLE, &image_index);
@@ -320,52 +400,18 @@ void MyScene::render()
 	command_buffer_begin_info.pInheritanceInfo = NULL;
 	
 	vkWaitForFences(e.getDevice(), 1, &m_fences[f_submit], VK_TRUE, UINT64_MAX);
-	vkResetFences(e.getDevice(), 1, &m_fences[f_submit]);
 	
 	vkBeginCommandBuffer(m_command_buffers[image_index], &command_buffer_begin_info);
 	
-	VkClearColorValue clear_color{1.0f, 0.0f, 0.0f, 1.0f};
-	VkImageSubresourceRange sub_range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+	//vkCmdBindPipeline(m_command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
 	
-	VkImageMemoryBarrier img_bar1{
-		VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		NULL,
-		0,//VkAccessFlagBits::,
-		VK_ACCESS_TRANSFER_WRITE_BIT,
-		VK_IMAGE_LAYOUT_UNDEFINED,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		VK_QUEUE_FAMILY_IGNORED,
-		VK_QUEUE_FAMILY_IGNORED,
-		e.getSwapchainImages()[image_index],
-		sub_range
-	};
+		vkCmdBeginRenderPass(m_command_buffers[image_index], &m_render_targets[image_index].begin_info, VK_SUBPASS_CONTENTS_INLINE);
 	
-	vkCmdClearColorImage(m_command_buffers[image_index],
-	e.getSwapchainImages()[image_index],
-	VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-	&clear_color,
-	1,
-	&sub_range);
-	
-	VkImageMemoryBarrier img_bar2{
-		VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
-		NULL,
-		VK_ACCESS_TRANSFER_WRITE_BIT,
-		0,//VkAccessFlagBits::,
-		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-		VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-		VK_QUEUE_FAMILY_IGNORED,
-		VK_QUEUE_FAMILY_IGNORED,
-		e.getSwapchainImages()[image_index],
-		sub_range
-	};
+		vkCmdEndRenderPass(m_command_buffers[image_index]);
 	
 	vkEndCommandBuffer(m_command_buffers[image_index]);
 	
-	VkQueue queue;
-	vkGetDeviceQueue(e.getDevice(), e.getQueueFamilyIndexGeneral(), 0, &queue);
-	
-	VkPipelineStageFlags submit_wait_flags[] = {VK_PIPELINE_STAGE_TRANSFER_BIT};
+	VkPipelineStageFlags submit_wait_flags[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
 	
 	VkSubmitInfo submit_info{};
 	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -378,7 +424,8 @@ void MyScene::render()
 	submit_info.pWaitSemaphores = &m_semaphores[s_acquire_image];
 	submit_info.pWaitDstStageMask = submit_wait_flags;
 	
-	vkQueueSubmit(queue, 1, &submit_info, m_fences[f_submit]);
+	vkResetFences(e.getDevice(), 1, &m_fences[f_submit]);
+	vkQueueSubmit(m_queue, 1, &submit_info, m_fences[f_submit]);
 	
 	VkPresentInfoKHR present_info{};
 	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -388,9 +435,9 @@ void MyScene::render()
 	present_info.swapchainCount = 1;
 	present_info.pSwapchains = &e.getSwapchain();
 	present_info.waitSemaphoreCount = 1;
-	present_info.pWaitSemaphores = &m_semaphores[s_acquire_image];
+	present_info.pWaitSemaphores = &m_semaphores[s_submit];
 	
-	vkQueuePresentKHR(queue, &present_info);
+	vkQueuePresentKHR(m_queue, &present_info);
 }
 
 void MyScene::KeyPressed(keycode_t k)

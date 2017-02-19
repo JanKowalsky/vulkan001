@@ -213,6 +213,8 @@ bool VulkanEngine::InitDevice()
 
 void VulkanEngine::onResize()
 {
+	vkDeviceWaitIdle(m_device);
+	
 	DeinitSurfaceDependentObjects();
 
 	InitSurfaceDependentObjects();
@@ -340,7 +342,7 @@ bool VulkanEngine::InitSwapchain()
 	swapchain_create_info.imageFormat = surface_format.format;
 	swapchain_create_info.imageExtent = m_surface_extent;
 	swapchain_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	swapchain_create_info.imageUsage = VK_IMAGE_USAGE_STORAGE_BIT;
+	swapchain_create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	swapchain_create_info.minImageCount = image_count;
 	swapchain_create_info.oldSwapchain = VK_NULL_HANDLE;
 	swapchain_create_info.pQueueFamilyIndices = &m_queue_family_index_general;
