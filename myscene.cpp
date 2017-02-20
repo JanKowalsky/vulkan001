@@ -3,8 +3,11 @@
 #include <iostream>
 #include <cstdlib>
 
-constexpr const uint32_t res_x = 500;
-constexpr const uint32_t res_y = 500;
+#include <Magick++.h>
+using namespace Magick;
+
+uint32_t res_x = 960;
+uint32_t res_y = 955;
 
 enum SemNames{s_acquire_image, s_submit, num_sems};
 enum FenNames{f_submit, num_fences};
@@ -16,6 +19,43 @@ struct s_constants
 	float particle_speed = 10.0f;
 	
 } constants;
+
+void loadImage(std::string pathname, uint32_t size_x, uint32_t size_y, void** dst)
+{
+	float* buf = (float*)*dst;
+	Image img;
+	img.read(pathname);
+	
+	if(size_x != 0 && size_y != 0)
+		img.resize(Geometry(size_x, size_y, 0, 0));
+	
+	img.modifyImage();
+	img.magick("RGBA");
+	
+	auto w = img.columns();
+	auto h = img.rows();
+	
+	PixelPacket* pixels = img.getPixels(0,0,w,h);
+	for(size_t p = 0; p < w*h; p++)
+	{
+		Color c = pixels[p];
+		
+		float r = c.redQuantum();
+		float g = c.greenQuantum();
+		float b = c.blueQuantum();
+		float a = c.alphaQuantum();
+		
+		if(r != 0) r /= 65536.0f;
+		if(g != 0) g /= 65536.0f;
+		if(b != 0) b /= 65536.0f;
+		if(a != 0) a /= 65536.0f;
+		
+		buf[4*p] = r;
+		buf[4*p+1] = g;
+		buf[4*p+2] = b;
+		buf[4*p+3] = a;
+	}
+}
 
 int32_t findMemoryTypeIndex(uint32_t memory_type_bits, bool host_visible)
 {
@@ -46,7 +86,9 @@ void MyScene::initialize()
 	
 	initSynchronizationObjects();
 	initCommandBuffers();
+	initImage();
 	initVertexBuffer();
+	initSampler();
 	initDescriptorSets();
 	
 	initSurfaceDependentObjects();
@@ -252,6 +294,115 @@ void MyScene::initDepthStencilBuffer()
 	}
 }
 
+void MyScene::initSampler()
+{
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	VkSamplerCreateInfo sampler_create_info{};
+	sampler_create_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+	sampler_create_info.pNext = NULL;
+	sampler_create_info.flags = 0;
+	sampler_create_info.magFilter = VK_FILTER_LINEAR;
+	sampler_create_info.minFilter = VK_FILTER_LINEAR;
+	sampler_create_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+	sampler_create_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampler_create_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampler_create_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	sampler_create_info.anisotropyEnable = VK_TRUE;
+	sampler_create_info.maxAnisotropy = 4.0f;
+	sampler_create_info.unnormalizedCoordinates = VK_FALSE;
+	
+	vkCreateSampler(d, &sampler_create_info, VK_NULL_HANDLE, &m_sampler);
+}
+
+void MyScene::initImage()
+{	
+	VulkanEngine& e = VulkanEngine::get();
+	
+	VkImageCreateInfo image_create_info{};
+	image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	image_create_info.pNext = NULL;
+	image_create_info.flags = 0;
+	image_create_info.imageType = VK_IMAGE_TYPE_2D;
+	image_create_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+	image_create_info.extent = VkExtent3D{res_x, res_y, 1};
+	image_create_info.mipLevels = 1;
+	image_create_info.arrayLayers = 1;
+	image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	image_create_info.tiling = VK_IMAGE_TILING_LINEAR;
+	image_create_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+	image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	image_create_info.queueFamilyIndexCount = 1;
+	uint32_t qfi = e.getQueueFamilyIndexGeneral();
+	image_create_info.pQueueFamilyIndices = &qfi;
+	image_create_info.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
+	
+	vkCreateImage(e.getDevice(), &image_create_info, VK_NULL_HANDLE, &m_image);
+	
+	VkMemoryRequirements mem_req;
+	vkGetImageMemoryRequirements(e.getDevice(), m_image, &mem_req);
+	
+	VkMemoryAllocateInfo mem_alloc_info{};
+	mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mem_alloc_info.pNext = NULL;
+	mem_alloc_info.allocationSize = mem_req.size;
+	mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(mem_req.memoryTypeBits, true);
+	
+	vkAllocateMemory(e.getDevice(), &mem_alloc_info, VK_NULL_HANDLE, &m_image_memory);
+	vkBindImageMemory(e.getDevice(), m_image, m_image_memory, 0);
+	
+	/*Load image*/
+	
+	void* ptr;
+	vkMapMemory(e.getDevice(), m_image_memory, 0, VK_WHOLE_SIZE, 0, &ptr);
+	
+	loadImage("wiki.jpg", res_x, res_y, &ptr);
+	
+	/*for(size_t i = 0; i < mem_req.size / sizeof(float); i++)
+	{
+		((float*)ptr)[i] = i % 4 ? 0.0f : 1.0f;
+	}*/
+	
+	vkUnmapMemory(e.getDevice(), m_image_memory);
+	
+	/*Create image view*/
+	
+	VkImageViewCreateInfo iv_create_info{};
+	iv_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	iv_create_info.pNext = NULL;
+	iv_create_info.flags = 0;
+	iv_create_info.image = m_image;
+	iv_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	iv_create_info.format = image_create_info.format;
+	iv_create_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+	iv_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+	
+	vkCreateImageView(e.getDevice(), &iv_create_info, VK_NULL_HANDLE, &m_image_view);
+}
+
+void MyScene::destroyImage()
+{
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	if(m_image_view != VK_NULL_HANDLE)
+	{
+		vkDestroyImageView(d, m_image_view, VK_NULL_HANDLE);
+		m_image_view = VK_NULL_HANDLE;
+	}
+	
+	if(m_image != VK_NULL_HANDLE)
+	{
+		vkDestroyImage(d, m_image, VK_NULL_HANDLE);
+		m_image = VK_NULL_HANDLE;
+	}
+	
+	if(m_image_memory != VK_NULL_HANDLE)
+	{
+		vkFreeMemory(d, m_image_memory, VK_NULL_HANDLE);
+		m_image_memory = VK_NULL_HANDLE;
+	}
+}
+
 void MyScene::initRenderTargets()
 {
 	/*---Creating render pass---*/
@@ -402,7 +553,7 @@ void MyScene::initVertexBuffer()
 	Vertex* mem;
 	vkMapMemory(e.getDevice(), m_vertex_buffer_memory, 0, VK_WHOLE_SIZE, 0, (void**)&mem);
 	
-	constexpr const uint32_t numVerts = res_x * res_y;
+	const uint32_t numVerts = res_x * res_y;
 	constexpr const float x_bound = 1000.0f;
 	constexpr const float y_bound = 1000.0f;
 	constexpr const float z_bound = 1000.0f;
@@ -448,28 +599,38 @@ void MyScene::initDescriptorSets()
 	vb_binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
 	vb_binding.pImmutableSamplers = NULL;
 	
+	VkDescriptorSetLayoutBinding img_binding{};
+	img_binding.binding = 1;
+	img_binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	img_binding.descriptorCount = 1;
+	img_binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+	img_binding.pImmutableSamplers = &m_sampler;
+	
+	std::vector<VkDescriptorSetLayoutBinding> bindings{vb_binding, img_binding};
+	
 	VkDescriptorSetLayoutCreateInfo desc_set_layout_create_info{};
 	desc_set_layout_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
 	desc_set_layout_create_info.pNext = NULL;
 	desc_set_layout_create_info.flags = 0;
-	desc_set_layout_create_info.bindingCount = 1;
-	desc_set_layout_create_info.pBindings = &vb_binding;
+	desc_set_layout_create_info.bindingCount = bindings.size();
+	desc_set_layout_create_info.pBindings = bindings.data();
 	
 	vkCreateDescriptorSetLayout(d, &desc_set_layout_create_info, VK_NULL_HANDLE, &m_descriptor_set_layout);
 	
 	/*---Create descriptor pool---*/
 	
-	VkDescriptorPoolSize pool_size{};
-	pool_size.type = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-	pool_size.descriptorCount = 1;
+	std::vector<VkDescriptorPoolSize> pool_sizes{
+		{VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1},
+		{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1}
+	};
 	
 	VkDescriptorPoolCreateInfo desc_pool_create_info{};
 	desc_pool_create_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
 	desc_pool_create_info.pNext = NULL;
 	desc_pool_create_info.flags = 0;
 	desc_pool_create_info.maxSets = 1;
-	desc_pool_create_info.poolSizeCount = 1;
-	desc_pool_create_info.pPoolSizes = &pool_size;
+	desc_pool_create_info.poolSizeCount = pool_sizes.size();
+	desc_pool_create_info.pPoolSizes = pool_sizes.data();
 	
 	vkCreateDescriptorPool(d, &desc_pool_create_info, VK_NULL_HANDLE, &m_descriptor_pool);
 	
@@ -482,17 +643,34 @@ void MyScene::initDescriptorSets()
 	
 	vkAllocateDescriptorSets(d, &desc_set_allocate_info, &m_descriptor_set);
 	
-	VkWriteDescriptorSet ds_write{};
-	ds_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-	ds_write.pNext = NULL;
-	ds_write.dstSet = m_descriptor_set;
-	ds_write.dstBinding = 0;
-	ds_write.dstArrayElement = 0;
-	ds_write.descriptorCount = 1;
-	ds_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
-	ds_write.pTexelBufferView = &m_vertex_buffer_view;
+	VkWriteDescriptorSet vb_write{};
+	vb_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	vb_write.pNext = NULL;
+	vb_write.dstSet = m_descriptor_set;
+	vb_write.dstBinding = 0;
+	vb_write.dstArrayElement = 0;
+	vb_write.descriptorCount = 1;
+	vb_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER;
+	vb_write.pTexelBufferView = &m_vertex_buffer_view;
 	
-	vkUpdateDescriptorSets(d, 1, &ds_write, 0, NULL);
+	VkDescriptorImageInfo img_info{};
+	img_info.sampler = m_sampler;
+	img_info.imageView = m_image_view;
+	img_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	
+	VkWriteDescriptorSet img_write{};
+	img_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	img_write.pNext = NULL;
+	img_write.dstSet = m_descriptor_set;
+	img_write.dstBinding = 1;
+	img_write.dstArrayElement = 0;
+	img_write.descriptorCount = 1;
+	img_write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+	img_write.pImageInfo = &img_info;
+	
+	std::vector<VkWriteDescriptorSet> writes{vb_write, img_write};
+	
+	vkUpdateDescriptorSets(d, writes.size(), writes.data(), 0, NULL);
 }
 
 void MyScene::initGraphicsPipeline()
@@ -648,6 +826,14 @@ void MyScene::destroy()
 	destroySynchronizationObjects();
 	
 	destroySurfaceDependentObjects();
+	
+	if(m_sampler != VK_NULL_HANDLE)
+	{
+		vkDestroySampler(d, m_sampler, VK_NULL_HANDLE);
+		m_sampler = VK_NULL_HANDLE;
+	}
+	
+	destroyImage();
 	
 	if (m_command_pool != VK_NULL_HANDLE)
 	{

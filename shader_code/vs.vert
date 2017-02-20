@@ -1,7 +1,7 @@
 #version 450
 
-const float res_x = 500.0f;
-const float res_y = 500.0f;
+const float res_x = 960.0f;
+const float res_y = 955.0f;
 const float delta = 1.0f;
 
 layout(push_constant) uniform pushConstants {

@@ -54,7 +54,11 @@ private:
 	void initSynchronizationObjects();
 	void destroySynchronizationObjects();
 	
+	void destroyImage();
+	
 	void initCommandBuffers();
+	void initImage();
+	void initSampler();
 	void initDepthStencilBuffer();
 	void initRenderTargets();
 	void initGraphicsPipeline();
@@ -73,6 +77,11 @@ private:
 	VkBuffer m_vertex_buffer = VK_NULL_HANDLE;
 	VkBufferView m_vertex_buffer_view = VK_NULL_HANDLE;
 	VkDeviceMemory m_vertex_buffer_memory = VK_NULL_HANDLE;
+	
+	VkSampler m_sampler = VK_NULL_HANDLE;
+	VkDeviceMemory m_image_memory = VK_NULL_HANDLE;
+	VkImage m_image = VK_NULL_HANDLE;
+	VkImageView m_image_view = VK_NULL_HANDLE;
 	
 	VkDescriptorSetLayout m_descriptor_set_layout = VK_NULL_HANDLE;
 	VkDescriptorPool m_descriptor_pool = VK_NULL_HANDLE;
