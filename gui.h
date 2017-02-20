@@ -8,6 +8,10 @@
 
 class VulkanWindow;
 
+constexpr const mbflag_t LMB = 1;
+constexpr const mbflag_t MMB = 2;
+constexpr const mbflag_t RMB = 4;
+
 class InputManager
 {
 private:

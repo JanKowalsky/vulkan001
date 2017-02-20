@@ -101,7 +101,7 @@ void Camera::pitch(float angle)
 
 glm::mat4x4 Camera::getViewProj() const noexcept
 {
-	return m_view*m_proj;
+	return m_proj*m_view;
 }
 
 float Camera::getHorizontalFOVAngle() const noexcept

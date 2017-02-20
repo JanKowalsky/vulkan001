@@ -3,11 +3,19 @@
 #include <iostream>
 #include <cstdlib>
 
-constexpr const uint32_t res_x = 1920;
-constexpr const uint32_t res_y = 1080;
+constexpr const uint32_t res_x = 500;
+constexpr const uint32_t res_y = 500;
 
 enum SemNames{s_acquire_image, s_submit, num_sems};
 enum FenNames{f_submit, num_fences};
+
+struct s_constants
+{
+	glm::mat4x4 vp;
+	float dt;
+	float particle_speed = 10.0f;
+	
+} constants;
 
 int32_t findMemoryTypeIndex(uint32_t memory_type_bits, bool host_visible)
 {
@@ -49,6 +57,7 @@ void MyScene::initSurfaceDependentObjects()
 	float ratio = (float)VulkanEngine::get().getSurfaceExtent().width / (float)VulkanEngine::get().getSurfaceExtent().height;
 	m_camera = std::make_unique<Camera>(ratio, 1.0f, 1000.0f, M_PI_2);
 	
+	initDepthStencilBuffer();
 	initRenderTargets();
 	initGraphicsPipeline();
 }
@@ -56,6 +65,28 @@ void MyScene::initSurfaceDependentObjects()
 void MyScene::destroySurfaceDependentObjects()
 {
 	VkDevice d = VulkanEngine::get().getDevice();
+	
+	for(auto& m : m_depth_stencil_memory)
+	{
+		vkFreeMemory(d, m, VK_NULL_HANDLE);
+		m = VK_NULL_HANDLE;
+	}
+	
+	for(auto& v : m_depth_stencil_image_views)
+	{
+		if (v != VK_NULL_HANDLE)
+		{
+			vkDestroyImageView(d, v, VK_NULL_HANDLE);
+		}
+	}
+	
+	for(auto& i : m_depth_stencil_images)
+	{
+		if (i != VK_NULL_HANDLE)
+		{
+			vkDestroyImage(d, i, VK_NULL_HANDLE);
+		}
+	}
 	
 	if(m_pipeline_layout != VK_NULL_HANDLE)
 	{
@@ -147,33 +178,120 @@ void MyScene::initCommandBuffers()
 	vkAllocateCommandBuffers(VulkanEngine::get().getDevice(), &command_buffer_allocate_info, m_command_buffers.data());
 }
 
+void MyScene::initDepthStencilBuffer()
+{
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	/*---Creating depth stencil images---*/
+	
+	VkImageCreateInfo ds_img_create_info{};
+	ds_img_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	ds_img_create_info.pNext = NULL;
+	ds_img_create_info.flags = 0;
+	ds_img_create_info.imageType = VK_IMAGE_TYPE_2D;
+	ds_img_create_info.format = VK_FORMAT_D32_SFLOAT;
+	ds_img_create_info.extent = VkExtent3D{VulkanEngine::get().getSurfaceExtent().width,VulkanEngine::get().getSurfaceExtent().height, 1};
+	ds_img_create_info.mipLevels = 1;
+	ds_img_create_info.arrayLayers = 1;
+	ds_img_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	ds_img_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	ds_img_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	ds_img_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	ds_img_create_info.queueFamilyIndexCount = 1;
+	uint32_t qfi = VulkanEngine::get().getQueueFamilyIndexGeneral();
+	ds_img_create_info.pQueueFamilyIndices = &qfi;
+	ds_img_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	
+	/*Create a depth stencil image for each swapchain image*/
+	m_depth_stencil_images.resize(VulkanEngine::get().getSwapchainImageViews().size());
+	
+	for(auto& i : m_depth_stencil_images)
+		vkCreateImage(d, &ds_img_create_info, VK_NULL_HANDLE, &i);
+	
+	/*---Allocate and bind depth stencil memory---*/
+	
+	m_depth_stencil_memory.resize(m_depth_stencil_images.size());
+	
+	VkMemoryAllocateInfo ds_mem_alloc_info{};
+	ds_mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	ds_mem_alloc_info.pNext = NULL;
+	
+	VkMemoryRequirements ds_mem_req;
+	
+	/*For each depth stencil image...*/
+	for(size_t i = 0; i < m_depth_stencil_images.size(); i++)
+	{
+		/*Get given image memory requirements*/
+		vkGetImageMemoryRequirements(d, m_depth_stencil_images[i], &ds_mem_req);
+		
+		/*Update memory allocation info based on acquired requirements*/
+		ds_mem_alloc_info.allocationSize = ds_mem_req.size;
+		ds_mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(ds_mem_req.memoryTypeBits, false);
+		
+		/*Allocate and bind memory to given image*/
+		vkAllocateMemory(d, &ds_mem_alloc_info, VK_NULL_HANDLE, &m_depth_stencil_memory[i]);
+		vkBindImageMemory(d, m_depth_stencil_images[i], m_depth_stencil_memory[i], 0);
+	}
+	
+	VkImageViewCreateInfo ds_img_view_create_info{};
+	ds_img_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	ds_img_view_create_info.pNext = NULL;
+	ds_img_view_create_info.flags = 0;
+	ds_img_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	ds_img_view_create_info.format = ds_img_create_info.format;
+	ds_img_view_create_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+	ds_img_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT,0,1,0,1};
+	
+	/*Create a depth stencil image view for each depth stencil image*/
+	m_depth_stencil_image_views.resize(m_depth_stencil_images.size());
+	
+	for(size_t v = 0; v < m_depth_stencil_image_views.size(); v++)
+	{
+		ds_img_view_create_info.image = m_depth_stencil_images[v];
+		vkCreateImageView(d, &ds_img_view_create_info, VK_NULL_HANDLE, &m_depth_stencil_image_views[v]);
+	}
+}
+
 void MyScene::initRenderTargets()
 {
 	/*---Creating render pass---*/
 	
-	VkAttachmentDescription at_desc{};
-	at_desc.flags = 0;
-	at_desc.format = VulkanEngine::get().getSurfaceFormat();
-	at_desc.samples = VK_SAMPLE_COUNT_1_BIT;
-	at_desc.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-	at_desc.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-	at_desc.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	at_desc.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	VkAttachmentDescription at_desc[2]{};
 	
-	VkAttachmentReference col_at_ref[] =
+	/*color attachment - swapchain image*/
+	at_desc[0].flags = 0;
+	at_desc[0].format = VulkanEngine::get().getSurfaceFormat();
+	at_desc[0].samples = VK_SAMPLE_COUNT_1_BIT;
+	at_desc[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	at_desc[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	at_desc[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	at_desc[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	
+	/*depth stencil attachment*/
+	at_desc[1].flags = 0;
+	at_desc[1].format = VK_FORMAT_D32_SFLOAT;
+	at_desc[1].samples = VK_SAMPLE_COUNT_1_BIT;
+	at_desc[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	at_desc[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	at_desc[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	at_desc[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+	
+	std::vector<VkAttachmentReference> col_at_ref =
 	{
-		{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}
+		{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
 	};
+	
+	VkAttachmentReference ds_at_ref{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 	
 	VkSubpassDescription sub_desc{};
 	sub_desc.flags = 0;
 	sub_desc.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
 	sub_desc.inputAttachmentCount = 0;
 	sub_desc.pInputAttachments = NULL;
-	sub_desc.colorAttachmentCount = 1;
-	sub_desc.pColorAttachments = col_at_ref;
+	sub_desc.colorAttachmentCount = col_at_ref.size();
+	sub_desc.pColorAttachments = col_at_ref.data();
 	sub_desc.pResolveAttachments = NULL;
-	sub_desc.pDepthStencilAttachment = NULL;
+	sub_desc.pDepthStencilAttachment = &ds_at_ref;
 	sub_desc.preserveAttachmentCount = 0;
 	sub_desc.pPreserveAttachments = NULL;
 	
@@ -181,8 +299,8 @@ void MyScene::initRenderTargets()
 	render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
 	render_pass_create_info.pNext = NULL;
 	render_pass_create_info.flags = 0;
-	render_pass_create_info.attachmentCount = 1;
-	render_pass_create_info.pAttachments = &at_desc;
+	render_pass_create_info.attachmentCount = 2;
+	render_pass_create_info.pAttachments = at_desc;
 	render_pass_create_info.subpassCount = 1;
 	render_pass_create_info.pSubpasses = &sub_desc;
 	render_pass_create_info.dependencyCount = 0;
@@ -198,14 +316,15 @@ void MyScene::initRenderTargets()
 	frambuffer_create_info.pNext = NULL;
 	frambuffer_create_info.flags = 0;
 	frambuffer_create_info.renderPass = m_render_pass;
-	frambuffer_create_info.attachmentCount = 1;
+	frambuffer_create_info.attachmentCount = 2;
 	frambuffer_create_info.width = VulkanEngine::get().getSurfaceExtent().width;
 	frambuffer_create_info.height = VulkanEngine::get().getSurfaceExtent().height;
 	frambuffer_create_info.layers = 1;
 	
 	/*Specify clear values used for each framebuffer*/
 	std::vector<VkClearValue> cv = {
-			{VkClearColorValue{0, 0, 0, 0}}
+			{VkClearColorValue{0, 0, 0, 0}},
+			VkClearValue{.depthStencil=VkClearDepthStencilValue{1.0f}}
 		};
 	
 	/*Specify render pass begin info fields, which are identical for each framebuffer,
@@ -225,8 +344,9 @@ void MyScene::initRenderTargets()
 	/*For each render target...*/
 	for(size_t i = 0; i < m_render_targets.size(); i++)
 	{
-		/*Specify the attachment for each framebuffer as a different swapchain image view*/
-		frambuffer_create_info.pAttachments = &VulkanEngine::get().getSwapchainImageViews()[i];
+		/*Specify the attachments for each framebuffer as a different swapchain image view and different depth stencil buffer*/
+		VkImageView attachments[] = {VulkanEngine::get().getSwapchainImageViews()[i], m_depth_stencil_image_views[i]};
+		frambuffer_create_info.pAttachments = attachments;
 		/*Create a framebuffer for given render target*/
 		vkCreateFramebuffer(VulkanEngine::get().getDevice(), &frambuffer_create_info, VK_NULL_HANDLE, &m_render_targets[i].framebuffer);
 		
@@ -283,9 +403,9 @@ void MyScene::initVertexBuffer()
 	vkMapMemory(e.getDevice(), m_vertex_buffer_memory, 0, VK_WHOLE_SIZE, 0, (void**)&mem);
 	
 	constexpr const uint32_t numVerts = res_x * res_y;
-	constexpr const float x_bound = 500.0f;
-	constexpr const float y_bound = 500.0f;
-	constexpr const float z_bound = 500.0f;
+	constexpr const float x_bound = 1000.0f;
+	constexpr const float y_bound = 1000.0f;
+	constexpr const float z_bound = 1000.0f;
 	
 	/*Generate random initial location for each vertex, within specified bounds*/
 	for(size_t v = 0; v < numVerts; v++)
@@ -400,17 +520,6 @@ void MyScene::initGraphicsPipeline()
 	
 	std::vector<VkPipelineShaderStageCreateInfo> shader_stages = {vs_stage, fs_stage};
 	
-	/*std::vector<VkVertexInputBindingDescription> v_in_bind_desc =
-	{
-		{0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX},
-	};
-	
-	std::vector<VkVertexInputAttributeDescription> v_in_att_desc = 
-	{
-		{0, 0, VK_FORMAT_R32G32B32A32_SFLOAT, 0},
-		{1, 0, VK_FORMAT_R32G32B32_SFLOAT, 4*sizeof(float)}
-	};*/
-	
 	VkPipelineVertexInputStateCreateInfo vertex_input_state_create_info{};
 	vertex_input_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 	vertex_input_state_create_info.pNext = NULL;
@@ -424,7 +533,7 @@ void MyScene::initGraphicsPipeline()
 	input_assembly_state.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
 	input_assembly_state.pNext = NULL;
 	input_assembly_state.flags = 0;
-	input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	input_assembly_state.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
 	input_assembly_state.primitiveRestartEnable = VK_FALSE;
 	
 	VkViewport viewport;
@@ -481,14 +590,30 @@ void MyScene::initGraphicsPipeline()
 	blend_state.attachmentCount = 1;
 	blend_state.pAttachments = &att_state;
 	
+	VkPipelineDepthStencilStateCreateInfo depth_stensil_state{};
+	depth_stensil_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+	depth_stensil_state.pNext = NULL;
+	depth_stensil_state.flags = 0;
+	depth_stensil_state.depthTestEnable = VK_TRUE;
+	depth_stensil_state.depthWriteEnable = VK_TRUE;
+	depth_stensil_state.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+	depth_stensil_state.depthBoundsTestEnable = VK_FALSE;
+	depth_stensil_state.stencilTestEnable = VK_FALSE;
+	
+	VkPushConstantRange constant_ranges{};
+	
+	constant_ranges.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+	constant_ranges.offset = 0;
+	constant_ranges.size = sizeof(s_constants);	
+	
 	VkPipelineLayoutCreateInfo layout_info{};
 	layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
 	layout_info.pNext = NULL;
 	layout_info.flags = 0;
 	layout_info.setLayoutCount = 1;
 	layout_info.pSetLayouts = &m_descriptor_set_layout;
-	layout_info.pushConstantRangeCount = 0;
-	layout_info.pPushConstantRanges = NULL;
+	layout_info.pushConstantRangeCount = 1;
+	layout_info.pPushConstantRanges = &constant_ranges;
 	
 	vkCreatePipelineLayout(VulkanEngine::get().getDevice(), &layout_info, VK_NULL_HANDLE, &m_pipeline_layout);
 	
@@ -504,7 +629,7 @@ void MyScene::initGraphicsPipeline()
 	g_pipeline_create_info.pViewportState = &viewport_state;
 	g_pipeline_create_info.pRasterizationState = &rast_state;
 	g_pipeline_create_info.pMultisampleState = &multi_state;
-	g_pipeline_create_info.pDepthStencilState = NULL;
+	g_pipeline_create_info.pDepthStencilState = &depth_stensil_state;
 	g_pipeline_create_info.pColorBlendState = &blend_state;
 	g_pipeline_create_info.pDynamicState = NULL;
 	g_pipeline_create_info.layout = m_pipeline_layout;
@@ -577,11 +702,31 @@ void MyScene::onResize()
 	initSurfaceDependentObjects();
 }
 
+void MyScene::update()
+{
+	float dt = m_timer.getDeltaTime();
+	float speed = InputManager::getKeyState(VKey_LSHIFT) ? 100.0f : 40.0f;
+	
+	if(InputManager::getKeyState(VKey_W)) m_camera->walk(speed*dt);
+	if(InputManager::getKeyState(VKey_S)) m_camera->walk(-speed*dt);
+	if(InputManager::getKeyState(VKey_A)) m_camera->strafe(-speed*dt);
+	if(InputManager::getKeyState(VKey_D)) m_camera->strafe(speed*dt);
+	if(InputManager::getKeyState(VKey_SPACE)) m_camera->upDown(speed*dt);
+	if(InputManager::getKeyState(VKey_C)) m_camera->upDown(-speed*dt);
+	
+	constants.dt = m_timer.getDeltaTime();
+	constants.vp = m_camera->getViewProj();
+}
+
 void MyScene::render()
 {	
+	update();
+	
 	VulkanEngine& e = VulkanEngine::get();
 	uint32_t image_index;
 	vkAcquireNextImageKHR(e.getDevice(), e.getSwapchain(), UINT64_MAX, m_semaphores[s_acquire_image], VK_NULL_HANDLE, &image_index);
+	
+	VkCommandBuffer cmd_buf = m_command_buffers[image_index];
 	
 	VkCommandBufferBeginInfo command_buffer_begin_info{};
 	command_buffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -591,19 +736,20 @@ void MyScene::render()
 	
 	vkWaitForFences(e.getDevice(), 1, &m_fences[f_submit], VK_TRUE, UINT64_MAX);
 	
-	vkBeginCommandBuffer(m_command_buffers[image_index], &command_buffer_begin_info);
+	vkBeginCommandBuffer(cmd_buf, &command_buffer_begin_info);
 	
-	vkCmdBindPipeline(m_command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
+	vkCmdBindPipeline(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline);
 	
-	vkCmdBindDescriptorSets(m_command_buffers[image_index], VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout, 0, 1, &m_descriptor_set, 0, NULL);
+	vkCmdPushConstants(cmd_buf, m_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(s_constants), &constants);
+	vkCmdBindDescriptorSets(cmd_buf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout, 0, 1, &m_descriptor_set, 0, NULL);
 	
-		vkCmdBeginRenderPass(m_command_buffers[image_index], &m_render_targets[image_index].begin_info, VK_SUBPASS_CONTENTS_INLINE);
+		vkCmdBeginRenderPass(cmd_buf, &m_render_targets[image_index].begin_info, VK_SUBPASS_CONTENTS_INLINE);
 	
-		vkCmdDraw(m_command_buffers[image_index], res_x*res_y, 1, 0, 0);
+		vkCmdDraw(cmd_buf, res_x*res_y, 1, 0, 0);
 	
-		vkCmdEndRenderPass(m_command_buffers[image_index]);
+		vkCmdEndRenderPass(cmd_buf);
 	
-	vkEndCommandBuffer(m_command_buffers[image_index]);
+	vkEndCommandBuffer(cmd_buf);
 	
 	VkPipelineStageFlags submit_wait_flags[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
 	
@@ -611,7 +757,7 @@ void MyScene::render()
 	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submit_info.pNext = NULL;
 	submit_info.commandBufferCount = 1;
-	submit_info.pCommandBuffers = &m_command_buffers[image_index];
+	submit_info.pCommandBuffers = &cmd_buf;
 	submit_info.signalSemaphoreCount = 1;
 	submit_info.pSignalSemaphores = &m_semaphores[s_submit];
 	submit_info.waitSemaphoreCount = 1;
@@ -640,7 +786,10 @@ void MyScene::KeyPressed(keycode_t k)
 	{
 		case VKey_ESC:
 			VulkanEngine::get().stop();
-		break;
+			break;
+		case VKey_P:
+			m_timer.toggle();
+			break;
 		default:
 		break;
 	}
@@ -658,17 +807,22 @@ void MyScene::MouseDragged(int16_t dx, int16_t dy)
 
 void MyScene::MouseMoved(int16_t dx, int16_t dy)
 {
+	float dt = m_timer.getDeltaTime();
 	
+	m_camera->rotate(dx*dt);
+	m_camera->pitch(dy*dt);
 }
 
-void MyScene::MousePressed(mbflag_t)
+void MyScene::MousePressed(mbflag_t mb)
 {
-	
+	if(mb == RMB)
+		constants.particle_speed = 100.0f;
 }
 
-void MyScene::MouseReleased(mbflag_t)
+void MyScene::MouseReleased(mbflag_t mb)
 {
-	
+	if(mb == RMB)
+		constants.particle_speed = 10.0f;
 }
 
 void MyScene::MouseScrolledDown()

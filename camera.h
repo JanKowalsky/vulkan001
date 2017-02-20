@@ -31,7 +31,7 @@ public:
 	float getFar() const noexcept;
 	float getNear() const noexcept;
 
-	inline glm::fmat4x4 getViewProj() const noexcept;
+	glm::fmat4x4 getViewProj() const noexcept;
 	const glm::fmat4x4& getView() const noexcept;
 	const glm::fmat4x4& getProj() const noexcept;
 

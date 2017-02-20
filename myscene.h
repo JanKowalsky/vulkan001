@@ -11,6 +11,7 @@
 struct Vertex
 {
 	glm::vec3 pos;
+	float pad;
 };
 
 struct RenderTarget
@@ -31,6 +32,7 @@ public:
 	virtual InputManager& getInputManager() override;
 	virtual Timer& getTimer() override;
 	virtual void onResize() override;
+	void update();
 	virtual void render() override;
 
 	virtual void KeyPressed(keycode_t) override;
@@ -53,6 +55,7 @@ private:
 	void destroySynchronizationObjects();
 	
 	void initCommandBuffers();
+	void initDepthStencilBuffer();
 	void initRenderTargets();
 	void initGraphicsPipeline();
 	void initVertexBuffer();
@@ -76,8 +79,13 @@ private:
 	VkDescriptorSet m_descriptor_set = VK_NULL_HANDLE;
 	
 	/*---Surface Dependent---*/
+	std::vector<VkDeviceMemory> m_depth_stencil_memory;
+	std::vector<VkImage> m_depth_stencil_images;
+	std::vector<VkImageView> m_depth_stencil_image_views;
+	
 	VkRenderPass m_render_pass = VK_NULL_HANDLE;
 	std::vector<RenderTarget> m_render_targets;
+	
 	VkPipelineLayout m_pipeline_layout;
 	VkPipeline m_graphics_pipeline = VK_NULL_HANDLE;
 	

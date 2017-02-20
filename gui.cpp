@@ -4,10 +4,6 @@
 #include "engine.h"
 #include <stdio.h>
 
-constexpr const mbflag_t LMB = 1;
-constexpr const mbflag_t MMB = 2;
-constexpr const mbflag_t RMB = 4;
-
 InputManager::sKeyStateBuffer InputManager::KeyStateBuffer;
 uint16_t InputManager::lastMouseX;
 uint16_t InputManager::lastMouseY;

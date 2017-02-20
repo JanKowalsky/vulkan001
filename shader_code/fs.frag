@@ -6,5 +6,5 @@ layout(location=0) out vec4 out_col;
 
 void main()
 {
-	out_col = vec4(1,0,0,1);
+	out_col = vec4(0.4f,0.6f,0.6f,1);
 }
