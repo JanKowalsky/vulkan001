@@ -54,6 +54,8 @@ void VulkanEngine::EnableLayersAndExtensions()
 	
 #ifndef NDEBUG
 	m_instance_layers.push_back("VK_LAYER_LUNARG_standard_validation");
+	m_instance_layers.push_back("VK_LAYER_LUNARG_monitor");
+	//m_instance_layers.push_back("VK_LAYER_LUNARG_api_dump");
 	
 	m_instance_extensions.push_back(VK_EXT_DEBUG_REPORT_EXTENSION_NAME);
 #endif//NDEBUG
@@ -288,7 +290,7 @@ bool VulkanEngine::InitSwapchain()
 	{
 		m_surface_extent = surface_capabilities.currentExtent;
 	}
-
+	
 	image_count = surface_capabilities.minImageCount + 1;
 
 	uint32_t surface_format_count = 0;
@@ -342,7 +344,7 @@ bool VulkanEngine::InitSwapchain()
 	swapchain_create_info.imageFormat = surface_format.format;
 	swapchain_create_info.imageExtent = m_surface_extent;
 	swapchain_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	swapchain_create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+	swapchain_create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 	swapchain_create_info.minImageCount = image_count;
 	swapchain_create_info.oldSwapchain = VK_NULL_HANDLE;
 	swapchain_create_info.pQueueFamilyIndices = &m_queue_family_index_general;

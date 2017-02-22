@@ -310,11 +310,11 @@ void InputManager::ManageInput(std::unique_ptr<input_t, std::function<void(input
 			InputManager::lastMouseX = ev->event_x;
 			InputManager::lastMouseY = ev->event_y;
 			
-			//if state == 0, then no buttons pressed, call moved
-			if (ev->state == 0)
-				MouseMoved(dx, dy);
-			else //if state != 0, then buttons pressed, call dragged
+			//check state for buttons pressed
+			if (ev->state & 0x700)
 				MouseDragged(dx, dy);
+			else 
+				MouseMoved(dx, dy);
 			
 			break;
 		}

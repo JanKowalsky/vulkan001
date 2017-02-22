@@ -1,33 +1,52 @@
 #include "myscene.h"
 #include "shader.h"
+#include "recorder.h"
 #include <iostream>
 #include <cstdlib>
+#include <future>
 
 #include <Magick++.h>
 using namespace Magick;
 
-uint32_t res_x = 960;
-uint32_t res_y = 955;
-
 enum SemNames{s_acquire_image, s_submit, num_sems};
-enum FenNames{f_submit, num_fences};
+//enum FenNames{f_submit, num_fences};
+
+constexpr const auto img_filename = "bridge.jpg";
+
+constexpr const float x_bound = 5000.0f;
+constexpr const float y_bound = 5000.0f;
+constexpr const float z_bound = 5000.0f;
+constexpr const float min_speed = 50.0f;
+constexpr const float mid_speed = 100.0f;
+constexpr const float top_speed = 200.0f;
+
+constexpr const uint32_t video_res_x = 1920;
+constexpr const uint32_t video_res_y = 1080;
+constexpr const uint8_t video_fps = 25;
+constexpr const auto vid_filename = "tmp.mp4";
+bool recording = false;
 
 struct s_constants
 {
 	glm::mat4x4 vp;
 	float dt;
-	float particle_speed = 10.0f;
-	
+	float particle_speed = min_speed;
+	uint32_t res_x = 960;
+	uint32_t res_y = 955;
 } constants;
 
-void loadImage(std::string pathname, uint32_t size_x, uint32_t size_y, void** dst)
+void loadImage(std::string pathname, uint16_t size_x, uint16_t size_y, void** dst)
 {
 	float* buf = (float*)*dst;
-	Image img;
-	img.read(pathname);
+	Image img(pathname);
 	
 	if(size_x != 0 && size_y != 0)
-		img.resize(Geometry(size_x, size_y, 0, 0));
+	{
+		Geometry newSize(size_x, size_y, 0, 0);
+		/*Don't preserve aspect ratio*/
+		newSize.aspect(true);
+		img.resize(newSize);
+	}
 	
 	img.modifyImage();
 	img.magick("RGBA");
@@ -45,10 +64,13 @@ void loadImage(std::string pathname, uint32_t size_x, uint32_t size_y, void** ds
 		float b = c.blueQuantum();
 		float a = c.alphaQuantum();
 		
-		if(r != 0) r /= 65536.0f;
-		if(g != 0) g /= 65536.0f;
-		if(b != 0) b /= 65536.0f;
-		if(a != 0) a /= 65536.0f;
+		constexpr const float _2_16 = 1 << 16;
+		constexpr const float max_col = sizeof(void*) == 8 ? _2_16 : 255;
+		
+		if(r != 0) r /= max_col;
+		if(g != 0) g /= max_col;
+		if(b != 0) b /= max_col;
+		if(a != 0) a /= max_col;
 		
 		buf[4*p] = r;
 		buf[4*p+1] = g;
@@ -57,17 +79,29 @@ void loadImage(std::string pathname, uint32_t size_x, uint32_t size_y, void** ds
 	}
 }
 
-int32_t findMemoryTypeIndex(uint32_t memory_type_bits, bool host_visible)
+int32_t findMemoryTypeIndex(uint32_t memory_type_bits, VkMemoryPropertyFlagBits required = (VkMemoryPropertyFlagBits)0, VkMemoryPropertyFlagBits wanted = (VkMemoryPropertyFlagBits)0)
 {
 	const VkPhysicalDeviceMemoryProperties& props = VulkanEngine::get().getPhyDevMemProps();
+	int32_t res = -1;
 	
 	for(size_t i = 0; i < props.memoryTypeCount; i++)
 	{
-		if((memory_type_bits & (1 << i)) && (!host_visible || (props.memoryTypes[i].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)))
-			return i;
+		if((memory_type_bits & (1 << i)) && (props.memoryTypes[i].propertyFlags & required) == required)
+		{
+			if(wanted != 0)
+			{
+				int match = props.memoryTypes[i].propertyFlags & wanted;
+				if(match == wanted)
+					return i;
+				else if(match != 0)
+					res = i;
+			}
+			else
+				return i;
+		}
 	}
 	
-	return -1;
+	return res;
 }
 
 MyScene::MyScene()
@@ -81,11 +115,12 @@ MyScene::~MyScene()
 }
 
 void MyScene::initialize()
-{	
+{
 	vkGetDeviceQueue(VulkanEngine::get().getDevice(), VulkanEngine::get().getQueueFamilyIndexGeneral(), 0, &m_queue);
 	
 	initSynchronizationObjects();
 	initCommandBuffers();
+	initRecordImages();
 	initImage();
 	initVertexBuffer();
 	initSampler();
@@ -162,7 +197,7 @@ void MyScene::initSynchronizationObjects()
 {
 	//fences---------------
 	VkFenceCreateInfo fence_create_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, NULL, VK_FENCE_CREATE_SIGNALED_BIT};
-	m_fences.resize(num_fences);
+	m_fences.resize(VulkanEngine::get().getSwapchainImages().size());
 	for(auto& f : m_fences)
 	{
 		vkCreateFence(VulkanEngine::get().getDevice(), &fence_create_info, VK_NULL_HANDLE, &f);
@@ -220,6 +255,84 @@ void MyScene::initCommandBuffers()
 	vkAllocateCommandBuffers(VulkanEngine::get().getDevice(), &command_buffer_allocate_info, m_command_buffers.data());
 }
 
+void MyScene::initRecordImages()
+{
+	VulkanEngine& e = VulkanEngine::get();
+	uint32_t qfi = e.getQueueFamilyIndexGeneral();
+	
+	m_record_images.resize(e.getSwapchainImages().size());
+	
+	/*Image to frist blit to, changing format and size*/
+	VkImageCreateInfo ri_create_info{};
+	ri_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	ri_create_info.pNext = NULL;
+	ri_create_info.flags = 0;
+	ri_create_info.imageType = VK_IMAGE_TYPE_2D;
+	ri_create_info.format = VK_FORMAT_R8G8B8A8_UINT;
+	ri_create_info.extent = VkExtent3D{video_res_x, video_res_y, 1};
+	ri_create_info.mipLevels = 1;
+	ri_create_info.arrayLayers = 1;
+	ri_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	ri_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	ri_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	ri_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	ri_create_info.queueFamilyIndexCount = 1;
+	ri_create_info.pQueueFamilyIndices = &qfi;
+	ri_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	
+	/*Staging image to then copy to and read from on the host*/
+	VkImageCreateInfo ti_create_info{};
+	ti_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	ti_create_info.pNext = NULL;
+	ti_create_info.flags = 0;
+	ti_create_info.imageType = VK_IMAGE_TYPE_2D;
+	ti_create_info.format = VK_FORMAT_R8G8B8A8_UINT;
+	ti_create_info.extent = VkExtent3D{video_res_x, video_res_y, 1};
+	ti_create_info.mipLevels = 1;
+	ti_create_info.arrayLayers = 1;
+	ti_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	ti_create_info.tiling = VK_IMAGE_TILING_LINEAR;
+	ti_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	ti_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	ti_create_info.queueFamilyIndexCount = 1;
+	ti_create_info.pQueueFamilyIndices = &qfi;
+	ti_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	
+	
+	VkMemoryRequirements req{};
+	VkMemoryAllocateInfo alloc_info{};
+	alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	alloc_info.pNext = NULL;
+	
+	for(auto& ri : m_record_images)
+	{
+		/*img*/
+		vkCreateImage(e.getDevice(), &ri_create_info, VK_NULL_HANDLE, &ri.img);
+		
+		vkGetImageMemoryRequirements(e.getDevice(), ri.img, &req);
+		
+		alloc_info.allocationSize = req.size;
+		alloc_info.memoryTypeIndex = findMemoryTypeIndex(req.memoryTypeBits);
+		
+		vkAllocateMemory(e.getDevice(), &alloc_info, VK_NULL_HANDLE, &ri.img_mem);
+		
+		vkBindImageMemory(e.getDevice(), ri.img, ri.img_mem, 0);
+		
+		/*img1*/
+		vkCreateImage(e.getDevice(), &ti_create_info, VK_NULL_HANDLE, &ri.img1);
+		
+		vkGetImageMemoryRequirements(e.getDevice(), ri.img1, &req);
+		alloc_info.allocationSize = req.size;
+		alloc_info.memoryTypeIndex = findMemoryTypeIndex(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+		
+		vkAllocateMemory(e.getDevice(), &alloc_info, VK_NULL_HANDLE, &ri.img_mem1);
+		
+		vkBindImageMemory(e.getDevice(), ri.img1, ri.img_mem1, 0);
+	}
+	
+	
+}
+
 void MyScene::initDepthStencilBuffer()
 {
 	VkDevice d = VulkanEngine::get().getDevice();
@@ -268,7 +381,7 @@ void MyScene::initDepthStencilBuffer()
 		
 		/*Update memory allocation info based on acquired requirements*/
 		ds_mem_alloc_info.allocationSize = ds_mem_req.size;
-		ds_mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(ds_mem_req.memoryTypeBits, false);
+		ds_mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(ds_mem_req.memoryTypeBits);
 		
 		/*Allocate and bind memory to given image*/
 		vkAllocateMemory(d, &ds_mem_alloc_info, VK_NULL_HANDLE, &m_depth_stencil_memory[i]);
@@ -325,7 +438,7 @@ void MyScene::initImage()
 	image_create_info.flags = 0;
 	image_create_info.imageType = VK_IMAGE_TYPE_2D;
 	image_create_info.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-	image_create_info.extent = VkExtent3D{res_x, res_y, 1};
+	image_create_info.extent = VkExtent3D{constants.res_x, constants.res_y, 1};
 	image_create_info.mipLevels = 1;
 	image_create_info.arrayLayers = 1;
 	image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -346,7 +459,7 @@ void MyScene::initImage()
 	mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	mem_alloc_info.pNext = NULL;
 	mem_alloc_info.allocationSize = mem_req.size;
-	mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(mem_req.memoryTypeBits, true);
+	mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 	
 	vkAllocateMemory(e.getDevice(), &mem_alloc_info, VK_NULL_HANDLE, &m_image_memory);
 	vkBindImageMemory(e.getDevice(), m_image, m_image_memory, 0);
@@ -356,12 +469,7 @@ void MyScene::initImage()
 	void* ptr;
 	vkMapMemory(e.getDevice(), m_image_memory, 0, VK_WHOLE_SIZE, 0, &ptr);
 	
-	loadImage("wiki.jpg", res_x, res_y, &ptr);
-	
-	/*for(size_t i = 0; i < mem_req.size / sizeof(float); i++)
-	{
-		((float*)ptr)[i] = i % 4 ? 0.0f : 1.0f;
-	}*/
+	loadImage(img_filename, constants.res_x, constants.res_y, &ptr);
 	
 	vkUnmapMemory(e.getDevice(), m_image_memory);
 	
@@ -416,7 +524,7 @@ void MyScene::initRenderTargets()
 	at_desc[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	at_desc[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	at_desc[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	at_desc[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	at_desc[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;//VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
 	
 	/*depth stencil attachment*/
 	at_desc[1].flags = 0;
@@ -527,7 +635,7 @@ void MyScene::initVertexBuffer()
 	vb_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
 	vb_create_info.pNext = NULL;
 	vb_create_info.flags = 0;
-	vb_create_info.size = sizeof(Vertex) * res_x * res_y;
+	vb_create_info.size = sizeof(Vertex) * constants.res_x * constants.res_y;
 	vb_create_info.usage = VK_BUFFER_USAGE_STORAGE_TEXEL_BUFFER_BIT;
 	vb_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 	vb_create_info.queueFamilyIndexCount = 1;
@@ -544,7 +652,7 @@ void MyScene::initVertexBuffer()
 	vb_mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	vb_mem_alloc_info.pNext = NULL;
 	vb_mem_alloc_info.allocationSize = vb_mem_req.size;
-	vb_mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(vb_mem_req.memoryTypeBits, true);
+	vb_mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(vb_mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 	
 	/*Allocate memory for the buffer*/
 	vkAllocateMemory(e.getDevice(), &vb_mem_alloc_info, VK_NULL_HANDLE, &m_vertex_buffer_memory);
@@ -553,10 +661,7 @@ void MyScene::initVertexBuffer()
 	Vertex* mem;
 	vkMapMemory(e.getDevice(), m_vertex_buffer_memory, 0, VK_WHOLE_SIZE, 0, (void**)&mem);
 	
-	const uint32_t numVerts = res_x * res_y;
-	constexpr const float x_bound = 1000.0f;
-	constexpr const float y_bound = 1000.0f;
-	constexpr const float z_bound = 1000.0f;
+	const uint32_t numVerts = constants.res_x * constants.res_y;
 	
 	/*Generate random initial location for each vertex, within specified bounds*/
 	for(size_t v = 0; v < numVerts; v++)
@@ -827,6 +932,11 @@ void MyScene::destroy()
 	
 	destroySurfaceDependentObjects();
 	
+	for(auto& ri : m_record_images)
+	{
+		ri.destroy();
+	}
+	
 	if(m_sampler != VK_NULL_HANDLE)
 	{
 		vkDestroySampler(d, m_sampler, VK_NULL_HANDLE);
@@ -904,8 +1014,27 @@ void MyScene::update()
 	constants.vp = m_camera->getViewProj();
 }
 
+void recordFrame(VkFence fence, VkDeviceMemory mem)
+{
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	vkWaitForFences(d, 1, &fence, VK_TRUE, UINT64_MAX);
+	
+	uint8_t* data;
+	vkMapMemory(d, mem, 0, VK_WHOLE_SIZE, 0, (void**)&data);
+	
+	/*for(int i=0; i<10; i++)
+	{
+		std::cout << (int)data[i*4] << ' ' << (int)data[i*4+1] << ' ' << (int)data[i*4+2] << ' ' << (int)data[i*4+3] << '\n';
+	}*/
+	
+	NextFrame(data);
+	
+	vkUnmapMemory(d, mem);
+}
+
 void MyScene::render()
-{	
+{
 	update();
 	
 	VulkanEngine& e = VulkanEngine::get();
@@ -920,7 +1049,7 @@ void MyScene::render()
 	command_buffer_begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 	command_buffer_begin_info.pInheritanceInfo = NULL;
 	
-	vkWaitForFences(e.getDevice(), 1, &m_fences[f_submit], VK_TRUE, UINT64_MAX);
+	vkWaitForFences(e.getDevice(), 1, &m_fences[image_index], VK_TRUE, UINT64_MAX);
 	
 	vkBeginCommandBuffer(cmd_buf, &command_buffer_begin_info);
 	
@@ -931,9 +1060,75 @@ void MyScene::render()
 	
 		vkCmdBeginRenderPass(cmd_buf, &m_render_targets[image_index].begin_info, VK_SUBPASS_CONTENTS_INLINE);
 	
-		vkCmdDraw(cmd_buf, res_x*res_y, 1, 0, 0);
+		vkCmdDraw(cmd_buf, constants.res_x*constants.res_y, 1, 0, 0);
 	
 		vkCmdEndRenderPass(cmd_buf);
+		
+		/*if recording*/
+		/*barrier to move record img to transfer dst optimal*/
+		if(recording)
+		{
+			VkImageMemoryBarrier barr_rec_to_trans_d{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img,
+			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
+			
+			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barr_rec_to_trans_d);
+			
+			VkImageBlit blit_reg{};
+			blit_reg.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			blit_reg.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			blit_reg.srcOffsets[0] = {0, 0, 0};
+			blit_reg.srcOffsets[1] = {e.getSurfaceExtent().width, e.getSurfaceExtent().height, 1};
+			blit_reg.dstOffsets[0] = {0, 0, 0};
+			blit_reg.dstOffsets[1] = {video_res_x, video_res_y, 1};
+		
+			vkCmdBlitImage(cmd_buf, e.getSwapchainImages()[image_index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_record_images[image_index].img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_reg, VK_FILTER_NEAREST);
+		
+		/*if recording*/
+		/*barrier to move swapchain img to present optimal, move record img to transfer src optimal and move target img to transfer dst optimal*/
+			
+			VkImageMemoryBarrier barr_swp_to_present{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, e.getSwapchainImages()[image_index],
+			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
+			
+			VkImageMemoryBarrier barr_rec_to_trans_s{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img,
+			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
+			
+			VkImageMemoryBarrier barr_target_to_trans_d{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img1,
+			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
+			
+			VkImageMemoryBarrier imb[] = {barr_swp_to_present, barr_rec_to_trans_s, barr_target_to_trans_d};
+			
+			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 3, imb);
+			
+			VkImageCopy cpy_reg{};
+			cpy_reg.srcOffset = {0,0,0};
+			cpy_reg.dstOffset = {0,0,0};
+			cpy_reg.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			cpy_reg.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			cpy_reg.extent = {video_res_x, video_res_y, 1};
+			
+			vkCmdCopyImage(cmd_buf, m_record_images[image_index].img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_record_images[image_index].img1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy_reg);
+			
+			/*if recording*/
+			/*move target image to layout general to later map it*/
+			
+			VkImageMemoryBarrier barr_target_to_general{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img1,
+			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
+			
+			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &barr_target_to_general);
+		}
+		else/*if not recording no blits and copies, only barrier to move swapchain image to present optimal*/
+		{
+			VkImageMemoryBarrier barr_swp_to_present{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
+			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, e.getSwapchainImages()[image_index],
+			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
+			
+			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &barr_swp_to_present);
+		}
 	
 	vkEndCommandBuffer(cmd_buf);
 	
@@ -950,8 +1145,8 @@ void MyScene::render()
 	submit_info.pWaitSemaphores = &m_semaphores[s_acquire_image];
 	submit_info.pWaitDstStageMask = submit_wait_flags;
 	
-	vkResetFences(e.getDevice(), 1, &m_fences[f_submit]);
-	vkQueueSubmit(m_queue, 1, &submit_info, m_fences[f_submit]);
+	vkResetFences(e.getDevice(), 1, &m_fences[image_index]);
+	vkQueueSubmit(m_queue, 1, &submit_info, m_fences[image_index]);
 	
 	VkPresentInfoKHR present_info{};
 	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -964,6 +1159,12 @@ void MyScene::render()
 	present_info.pWaitSemaphores = &m_semaphores[s_submit];
 	
 	vkQueuePresentKHR(m_queue, &present_info);
+	
+	//std::future<void> f;
+	
+	if(recording)
+		//recordFrame(m_fences[image_index], m_record_images[image_index].img_mem);
+		auto f = std::async(std::launch::async, recordFrame, m_fences[image_index], m_record_images[image_index].img_mem1);
 }
 
 void MyScene::KeyPressed(keycode_t k)
@@ -976,6 +1177,17 @@ void MyScene::KeyPressed(keycode_t k)
 		case VKey_P:
 			m_timer.toggle();
 			break;
+		case VKey_R:
+			if(!recording)
+			{
+				StartRecording(vid_filename, video_res_x, video_res_y, video_fps);
+				recording = true;
+			}
+			else
+			{
+				StopRecording();
+				recording = false;
+			}
 		default:
 		break;
 	}
@@ -988,27 +1200,26 @@ void MyScene::KeyReleased(keycode_t)
 
 void MyScene::MouseDragged(int16_t dx, int16_t dy)
 {
-	
+	m_camera->rotate(dx*0.01f);
+	m_camera->pitch(dy*0.01f);
 }
 
 void MyScene::MouseMoved(int16_t dx, int16_t dy)
 {
-	float dt = m_timer.getDeltaTime();
-	
-	m_camera->rotate(dx*dt);
-	m_camera->pitch(dy*dt);
+	m_camera->rotate(dx*0.01f);
+	m_camera->pitch(dy*0.01f);
 }
 
 void MyScene::MousePressed(mbflag_t mb)
 {
 	if(mb == RMB)
-		constants.particle_speed = 100.0f;
+		constants.particle_speed = top_speed;
 }
 
 void MyScene::MouseReleased(mbflag_t mb)
 {
 	if(mb == RMB)
-		constants.particle_speed = 10.0f;
+		constants.particle_speed = min_speed;
 }
 
 void MyScene::MouseScrolledDown()

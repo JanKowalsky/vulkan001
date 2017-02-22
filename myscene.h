@@ -14,6 +14,43 @@ struct Vertex
 	float pad;
 };
 
+struct RecordImage
+{
+	void destroy()
+	{
+		VkDevice d = VulkanEngine::get().getDevice();
+		
+		if(img != VK_NULL_HANDLE)
+		{
+			vkDestroyImage(d, img, VK_NULL_HANDLE);
+			img = VK_NULL_HANDLE;
+		}
+		
+		if(img1 != VK_NULL_HANDLE)
+		{
+			vkDestroyImage(d, img1, VK_NULL_HANDLE);
+			img1 = VK_NULL_HANDLE;
+		}
+		
+		if(img_mem1 != VK_NULL_HANDLE)
+		{
+			vkFreeMemory(d, img_mem1, VK_NULL_HANDLE);
+			img_mem1 = VK_NULL_HANDLE;
+		}
+		
+		if(img_mem != VK_NULL_HANDLE)
+		{
+			vkFreeMemory(d, img_mem, VK_NULL_HANDLE);
+			img_mem = VK_NULL_HANDLE;
+		}
+	}
+	
+	VkDeviceMemory img_mem = VK_NULL_HANDLE;
+	VkImage img = VK_NULL_HANDLE;
+	VkDeviceMemory img_mem1 = VK_NULL_HANDLE;
+	VkImage img1 = VK_NULL_HANDLE;
+};
+
 struct RenderTarget
 {
 	VkRenderPass render_pass;
@@ -62,9 +99,10 @@ private:
 	void initDepthStencilBuffer();
 	void initRenderTargets();
 	void initGraphicsPipeline();
+	void initRecordImages();
 	void initVertexBuffer();
 	void initDescriptorSets();
-
+	
 	/*---Surface Independent---*/
 	VkCommandPool m_command_pool = VK_NULL_HANDLE;
 	std::vector<VkCommandBuffer> m_command_buffers;
@@ -73,6 +111,8 @@ private:
 	std::vector<VkSemaphore> m_semaphores;
 	
 	VkQueue m_queue = VK_NULL_HANDLE;
+	
+	std::vector<RecordImage> m_record_images;
 	
 	VkBuffer m_vertex_buffer = VK_NULL_HANDLE;
 	VkBufferView m_vertex_buffer_view = VK_NULL_HANDLE;
