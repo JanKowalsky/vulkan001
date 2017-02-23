@@ -8,6 +8,17 @@ InputManager::sKeyStateBuffer InputManager::KeyStateBuffer;
 uint16_t InputManager::lastMouseX;
 uint16_t InputManager::lastMouseY;
 
+std::pair<float, float> VulkanWindow::getCursorPosNDC()
+{
+	auto win_pos = getCursorPosWin();
+	
+	std::pair<float, float> res;
+	res.first = -1.0f + static_cast<float>(win_pos.first) * 2.0f / m_width;
+	res.second = 1.0f + static_cast<float>(-win_pos.second) * 2.0f / m_height;
+	
+	return res;
+}
+
 const WindowParameters& VulkanWindow::getParams() const noexcept
 {
 	return m_params;
@@ -134,10 +145,10 @@ bool VulkanWindow::manageEvents(InputManager& im)
 	return true;
 }
 
-std::pair<int16_t, int16_t> InputManager::getCursorPosWin(VulkanWindow& win)
+std::pair<int16_t, int16_t> VulkanWindow::getCursorPosWin()
 {
 	POINT p;
-	HWND hwnd = win.getParams().hwnd;
+	HWND hwnd = m_params.hwnd;
 
 	GetCursorPos(&p);
 	ScreenToClient(hwnd, &p);
@@ -378,10 +389,10 @@ bool VulkanWindow::manageEvents(InputManager& im)
 	return true;
 }
 
-std::pair<int16_t, int16_t> InputManager::getCursorPosWin(VulkanWindow& win)
+std::pair<int16_t, int16_t> VulkanWindow::getCursorPosWin()
 {
-	auto cookie = xcb_query_pointer(win.getParams().connection, win.getParams().window);
-	auto reply = xcb_query_pointer_reply(win.getParams().connection, cookie, nullptr);
+	auto cookie = xcb_query_pointer(m_params.connection, m_params.window);
+	auto reply = xcb_query_pointer_reply(m_params.connection, cookie, nullptr);
 	
 	return std::pair<int16_t, int16_t>(reply->win_x, reply->win_y);
 	

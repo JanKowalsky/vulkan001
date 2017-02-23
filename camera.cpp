@@ -139,61 +139,36 @@ const glm::fmat4x4& Camera::getProj() const noexcept
 	return m_proj;
 }
 
-const glm::vec3& Camera::getCamPos() const noexcept
+const glm::vec3& Camera::getCamPosW() const noexcept
 { 
 	return m_camPos;
 }
 
-const glm::vec3& Camera::getCamLook() const noexcept
+const glm::vec3& Camera::getCamLookW() const noexcept
 { 
 	return m_camLook;
 }
 
-const glm::vec3& Camera::getCamUp() const noexcept
+const glm::vec3& Camera::getCamUpW() const noexcept
 { 
 	return m_camUp;
 }
 
-const glm::vec3& Camera::getCamRight() const noexcept
+const glm::vec3& Camera::getCamRightW() const noexcept
 { 
 	return m_camRight;
 }
 
-/*
-POINTF Camera::GetCursorNDCCoords(float vpWidth, float vpHeight, HWND hwnd)
+glm::vec3 Camera::getCurPosProj(const std::pair<float, float>& cur_pos_ndc) const
 {
-	POINT cur = GetWindowCursorPos(hwnd);
-
-	float x = cur.x;
-	float y = cur.y;
-
-	x *= 2.0f / vpWidth;
-	x -= 1.0f;
-
-	y *= -2.0f / vpHeight;
-	y += 1.0f;
-
-	POINTF res;
-	res.x = x;
-	res.y = y;
-
-	return res;
+	/*Calculate distance from camera to projection plane*/
+	float d = 1.0f / tanf(m_verFovAngle / 2.0f);
+	
+	return glm::vec3(cur_pos_ndc.first * m_aspectRatio, cur_pos_ndc.second, d);
 }
 
-XMFLOAT3 Camera::GetCursorPosProj(POINTF CurNDCCoords)
+glm::vec3 Camera::getCurPosProj(VulkanWindow& win) const
 {
-	CurNDCCoords.x *= mAspectRatio;
-
-	XMVECTOR CurPosProj = XMVector3TransformCoord(XMLoadFloat3(&XMFLOAT3(CurNDCCoords.x, CurNDCCoords.y, 1.0f / tanf(mVerFovAngle / 2.0f))), XMMatrixInverse(0, XMLoadFloat4x4(&mView)));
-
-	XMFLOAT3 res;
-	XMStoreFloat3(&res, CurPosProj);
-
-	return res;
+	auto cur_pos_ndc = win.getCursorPosNDC();
+	return getCurPosProj(cur_pos_ndc);
 }
-
-XMFLOAT3 Camera::GetCursorPosProj(float vpWidth, float vpHeight, HWND hwnd)
-{
-	return GetCursorPosProj(GetCursorNDCCoords(vpWidth, vpHeight, hwnd));
-}
-*/

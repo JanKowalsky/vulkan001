@@ -280,7 +280,7 @@ bool VulkanEngine::InitSwapchain()
 		ErrorMessage("Error: Failed to get physical device surface capabilities.", res);
 		return false;
 	}
-
+	
 	if (surface_capabilities.currentExtent.width == UINT32_MAX)
 	{
 		m_surface_extent.width = m_window->getWidth();
@@ -344,11 +344,9 @@ bool VulkanEngine::InitSwapchain()
 	swapchain_create_info.imageFormat = surface_format.format;
 	swapchain_create_info.imageExtent = m_surface_extent;
 	swapchain_create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	swapchain_create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	swapchain_create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	swapchain_create_info.minImageCount = image_count;
 	swapchain_create_info.oldSwapchain = VK_NULL_HANDLE;
-	swapchain_create_info.pQueueFamilyIndices = &m_queue_family_index_general;
-	swapchain_create_info.queueFamilyIndexCount = 1;
 	swapchain_create_info.presentMode = present_mode;
 	swapchain_create_info.preTransform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
 

@@ -42,7 +42,6 @@ public:
 	
 	static mbflag_t getMouseState() noexcept;
 	static bool getKeyState(keycode_t) noexcept;
-	static std::pair<int16_t, int16_t> getCursorPosWin(VulkanWindow&);
 };
 
 class VulkanWindow
@@ -54,6 +53,9 @@ public:
 	void show() const;
 	//returns if there were any events
 	bool manageEvents(InputManager&);
+	
+	std::pair<int16_t, int16_t> getCursorPosWin();
+	std::pair<float, float> getCursorPosNDC();
 	
 	uint32_t getX() const noexcept;
 	uint32_t getY() const noexcept;

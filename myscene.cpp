@@ -1,6 +1,5 @@
 #include "myscene.h"
 #include "shader.h"
-#include "recorder.h"
 #include <iostream>
 #include <cstdlib>
 #include <future>
@@ -26,6 +25,8 @@ constexpr const uint8_t video_fps = 25;
 constexpr const auto vid_filename = "tmp.mp4";
 bool recording = false;
 
+bool snap = false;
+
 struct s_constants
 {
 	glm::mat4x4 vp;
@@ -33,12 +34,17 @@ struct s_constants
 	float particle_speed = min_speed;
 	uint32_t res_x = 960;
 	uint32_t res_y = 955;
+	glm::vec3 eyeW;
+	float p0;
+	glm::vec3 curDirNW;
+	float p1;
 } constants;
 
 void loadImage(std::string pathname, uint16_t size_x, uint16_t size_y, void** dst)
 {
 	float* buf = (float*)*dst;
-	Image img(pathname);
+	Image img;
+	img.read(pathname);
 	
 	if(size_x != 0 && size_y != 0)
 	{
@@ -120,10 +126,10 @@ void MyScene::initialize()
 	
 	initSynchronizationObjects();
 	initCommandBuffers();
-	initRecordImages();
 	initImage();
 	initVertexBuffer();
 	initSampler();
+	initRecordImages();
 	initDescriptorSets();
 	
 	initSurfaceDependentObjects();
@@ -134,7 +140,6 @@ void MyScene::initSurfaceDependentObjects()
 	float ratio = (float)VulkanEngine::get().getSurfaceExtent().width / (float)VulkanEngine::get().getSurfaceExtent().height;
 	m_camera = std::make_unique<Camera>(ratio, 1.0f, 1000.0f, M_PI_2);
 	
-	initDepthStencilBuffer();
 	initRenderTargets();
 	initGraphicsPipeline();
 }
@@ -142,28 +147,6 @@ void MyScene::initSurfaceDependentObjects()
 void MyScene::destroySurfaceDependentObjects()
 {
 	VkDevice d = VulkanEngine::get().getDevice();
-	
-	for(auto& m : m_depth_stencil_memory)
-	{
-		vkFreeMemory(d, m, VK_NULL_HANDLE);
-		m = VK_NULL_HANDLE;
-	}
-	
-	for(auto& v : m_depth_stencil_image_views)
-	{
-		if (v != VK_NULL_HANDLE)
-		{
-			vkDestroyImageView(d, v, VK_NULL_HANDLE);
-		}
-	}
-	
-	for(auto& i : m_depth_stencil_images)
-	{
-		if (i != VK_NULL_HANDLE)
-		{
-			vkDestroyImage(d, i, VK_NULL_HANDLE);
-		}
-	}
 	
 	if(m_pipeline_layout != VK_NULL_HANDLE)
 	{
@@ -178,12 +161,8 @@ void MyScene::destroySurfaceDependentObjects()
 	}
 	
 	for(auto& rt : m_render_targets)
-	{		
-		if(rt.framebuffer != VK_NULL_HANDLE)
-		{
-			vkDestroyFramebuffer(d, rt.framebuffer, VK_NULL_HANDLE);
-			rt.framebuffer = VK_NULL_HANDLE;
-		}
+	{
+		rt.destroy();
 	}
 	
 	if (m_render_pass != VK_NULL_HANDLE)
@@ -258,7 +237,6 @@ void MyScene::initCommandBuffers()
 void MyScene::initRecordImages()
 {
 	VulkanEngine& e = VulkanEngine::get();
-	uint32_t qfi = e.getQueueFamilyIndexGeneral();
 	
 	m_record_images.resize(e.getSwapchainImages().size());
 	
@@ -276,8 +254,6 @@ void MyScene::initRecordImages()
 	ri_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
 	ri_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	ri_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	ri_create_info.queueFamilyIndexCount = 1;
-	ri_create_info.pQueueFamilyIndices = &qfi;
 	ri_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	
 	/*Staging image to then copy to and read from on the host*/
@@ -294,8 +270,6 @@ void MyScene::initRecordImages()
 	ti_create_info.tiling = VK_IMAGE_TILING_LINEAR;
 	ti_create_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
 	ti_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	ti_create_info.queueFamilyIndexCount = 1;
-	ti_create_info.pQueueFamilyIndices = &qfi;
 	ti_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	
 	
@@ -333,80 +307,6 @@ void MyScene::initRecordImages()
 	
 }
 
-void MyScene::initDepthStencilBuffer()
-{
-	VkDevice d = VulkanEngine::get().getDevice();
-	
-	/*---Creating depth stencil images---*/
-	
-	VkImageCreateInfo ds_img_create_info{};
-	ds_img_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-	ds_img_create_info.pNext = NULL;
-	ds_img_create_info.flags = 0;
-	ds_img_create_info.imageType = VK_IMAGE_TYPE_2D;
-	ds_img_create_info.format = VK_FORMAT_D32_SFLOAT;
-	ds_img_create_info.extent = VkExtent3D{VulkanEngine::get().getSurfaceExtent().width,VulkanEngine::get().getSurfaceExtent().height, 1};
-	ds_img_create_info.mipLevels = 1;
-	ds_img_create_info.arrayLayers = 1;
-	ds_img_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
-	ds_img_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-	ds_img_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-	ds_img_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	ds_img_create_info.queueFamilyIndexCount = 1;
-	uint32_t qfi = VulkanEngine::get().getQueueFamilyIndexGeneral();
-	ds_img_create_info.pQueueFamilyIndices = &qfi;
-	ds_img_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	
-	/*Create a depth stencil image for each swapchain image*/
-	m_depth_stencil_images.resize(VulkanEngine::get().getSwapchainImageViews().size());
-	
-	for(auto& i : m_depth_stencil_images)
-		vkCreateImage(d, &ds_img_create_info, VK_NULL_HANDLE, &i);
-	
-	/*---Allocate and bind depth stencil memory---*/
-	
-	m_depth_stencil_memory.resize(m_depth_stencil_images.size());
-	
-	VkMemoryAllocateInfo ds_mem_alloc_info{};
-	ds_mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-	ds_mem_alloc_info.pNext = NULL;
-	
-	VkMemoryRequirements ds_mem_req;
-	
-	/*For each depth stencil image...*/
-	for(size_t i = 0; i < m_depth_stencil_images.size(); i++)
-	{
-		/*Get given image memory requirements*/
-		vkGetImageMemoryRequirements(d, m_depth_stencil_images[i], &ds_mem_req);
-		
-		/*Update memory allocation info based on acquired requirements*/
-		ds_mem_alloc_info.allocationSize = ds_mem_req.size;
-		ds_mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(ds_mem_req.memoryTypeBits);
-		
-		/*Allocate and bind memory to given image*/
-		vkAllocateMemory(d, &ds_mem_alloc_info, VK_NULL_HANDLE, &m_depth_stencil_memory[i]);
-		vkBindImageMemory(d, m_depth_stencil_images[i], m_depth_stencil_memory[i], 0);
-	}
-	
-	VkImageViewCreateInfo ds_img_view_create_info{};
-	ds_img_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-	ds_img_view_create_info.pNext = NULL;
-	ds_img_view_create_info.flags = 0;
-	ds_img_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-	ds_img_view_create_info.format = ds_img_create_info.format;
-	ds_img_view_create_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-	ds_img_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT,0,1,0,1};
-	
-	/*Create a depth stencil image view for each depth stencil image*/
-	m_depth_stencil_image_views.resize(m_depth_stencil_images.size());
-	
-	for(size_t v = 0; v < m_depth_stencil_image_views.size(); v++)
-	{
-		ds_img_view_create_info.image = m_depth_stencil_images[v];
-		vkCreateImageView(d, &ds_img_view_create_info, VK_NULL_HANDLE, &m_depth_stencil_image_views[v]);
-	}
-}
-
 void MyScene::initSampler()
 {
 	VkDevice d = VulkanEngine::get().getDevice();
@@ -430,7 +330,7 @@ void MyScene::initSampler()
 
 void MyScene::initImage()
 {	
-	VulkanEngine& e = VulkanEngine::get();
+	VkDevice d = VulkanEngine::get().getDevice();
 	
 	VkImageCreateInfo image_create_info{};
 	image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -445,15 +345,12 @@ void MyScene::initImage()
 	image_create_info.tiling = VK_IMAGE_TILING_LINEAR;
 	image_create_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
 	image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	image_create_info.queueFamilyIndexCount = 1;
-	uint32_t qfi = e.getQueueFamilyIndexGeneral();
-	image_create_info.pQueueFamilyIndices = &qfi;
 	image_create_info.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
 	
-	vkCreateImage(e.getDevice(), &image_create_info, VK_NULL_HANDLE, &m_image);
+	vkCreateImage(d, &image_create_info, VK_NULL_HANDLE, &m_image);
 	
 	VkMemoryRequirements mem_req;
-	vkGetImageMemoryRequirements(e.getDevice(), m_image, &mem_req);
+	vkGetImageMemoryRequirements(d, m_image, &mem_req);
 	
 	VkMemoryAllocateInfo mem_alloc_info{};
 	mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
@@ -461,17 +358,17 @@ void MyScene::initImage()
 	mem_alloc_info.allocationSize = mem_req.size;
 	mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 	
-	vkAllocateMemory(e.getDevice(), &mem_alloc_info, VK_NULL_HANDLE, &m_image_memory);
-	vkBindImageMemory(e.getDevice(), m_image, m_image_memory, 0);
+	vkAllocateMemory(d, &mem_alloc_info, VK_NULL_HANDLE, &m_image_memory);
+	vkBindImageMemory(d, m_image, m_image_memory, 0);
 	
 	/*Load image*/
 	
 	void* ptr;
-	vkMapMemory(e.getDevice(), m_image_memory, 0, VK_WHOLE_SIZE, 0, &ptr);
+	vkMapMemory(d, m_image_memory, 0, VK_WHOLE_SIZE, 0, &ptr);
 	
 	loadImage(img_filename, constants.res_x, constants.res_y, &ptr);
 	
-	vkUnmapMemory(e.getDevice(), m_image_memory);
+	vkUnmapMemory(d, m_image_memory);
 	
 	/*Create image view*/
 	
@@ -485,7 +382,7 @@ void MyScene::initImage()
 	iv_create_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
 	iv_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
 	
-	vkCreateImageView(e.getDevice(), &iv_create_info, VK_NULL_HANDLE, &m_image_view);
+	vkCreateImageView(d, &iv_create_info, VK_NULL_HANDLE, &m_image_view);
 }
 
 void MyScene::destroyImage()
@@ -513,34 +410,151 @@ void MyScene::destroyImage()
 
 void MyScene::initRenderTargets()
 {
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	/*Creating a render target structure for each swapchain image*/
+	m_render_targets.resize(VulkanEngine::get().getSwapchainImageViews().size());
+	
+	/*--Creating target images---*/
+	
+	/*Target image create info*/
+	VkImageCreateInfo image_create_info{};
+	image_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	image_create_info.pNext = NULL;
+	image_create_info.flags = 0;
+	image_create_info.imageType = VK_IMAGE_TYPE_2D;
+	image_create_info.format = VK_FORMAT_R8G8B8A8_UINT;//VulkanEngine::get().getSurfaceFormat();
+	image_create_info.extent = VkExtent3D{VulkanEngine::get().getSurfaceExtent().width, VulkanEngine::get().getSurfaceExtent().height, 1};
+	image_create_info.mipLevels = 1;
+	image_create_info.arrayLayers = 1;
+	image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	image_create_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+	image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	image_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	
+	/*Target image view create info*/
+	VkImageViewCreateInfo iv_create_info{};
+	iv_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	iv_create_info.pNext = NULL;
+	iv_create_info.flags = 0;
+	iv_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	iv_create_info.format = image_create_info.format;
+	iv_create_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+	iv_create_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+	
+	VkMemoryAllocateInfo mem_alloc_info{};
+	mem_alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mem_alloc_info.pNext = NULL;
+	
+	VkMemoryRequirements mem_req;
+	
+	/*Create image for each render target*/
+	for(auto& rt : m_render_targets)
+	{
+		vkCreateImage(d, &image_create_info, VK_NULL_HANDLE, &rt.target_image.img);
+		
+		vkGetImageMemoryRequirements(d, rt.target_image.img, &mem_req);
+		
+		mem_alloc_info.allocationSize = mem_req.size;
+		mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		
+		vkAllocateMemory(d, &mem_alloc_info, VK_NULL_HANDLE, &rt.target_image.mem);
+		vkBindImageMemory(d, rt.target_image.img, rt.target_image.mem, 0);
+		
+		iv_create_info.image = rt.target_image.img;
+		vkCreateImageView(d, &iv_create_info, VK_NULL_HANDLE, &rt.target_image.img_view);
+	}
+	
+	/*---Creating depth stencil buffers---*/
+	
+	/*Depth stencil image create info*/
+	VkImageCreateInfo ds_img_create_info{};
+	ds_img_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	ds_img_create_info.pNext = NULL;
+	ds_img_create_info.flags = 0;
+	ds_img_create_info.imageType = VK_IMAGE_TYPE_2D;
+	ds_img_create_info.format = VK_FORMAT_D32_SFLOAT;
+	ds_img_create_info.extent = VkExtent3D{VulkanEngine::get().getSurfaceExtent().width,VulkanEngine::get().getSurfaceExtent().height, 1};
+	ds_img_create_info.mipLevels = 1;
+	ds_img_create_info.arrayLayers = 1;
+	ds_img_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+	ds_img_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+	ds_img_create_info.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+	ds_img_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	ds_img_create_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	
+	/*Depth stencil image view create info*/
+	VkImageViewCreateInfo ds_img_view_create_info{};
+	ds_img_view_create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	ds_img_view_create_info.pNext = NULL;
+	ds_img_view_create_info.flags = 0;
+	ds_img_view_create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	ds_img_view_create_info.format = ds_img_create_info.format;
+	ds_img_view_create_info.components = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
+	ds_img_view_create_info.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT,0,1,0,1};
+	
+	/*Create a depth stencil buffer for each render target*/
+	for(auto& rt : m_render_targets)
+	{
+		/*Create image*/
+		vkCreateImage(d, &ds_img_create_info, VK_NULL_HANDLE, &rt.depth_stencil_buffer.img);
+		
+		/*Get given image memory requirements*/
+		vkGetImageMemoryRequirements(d, rt.depth_stencil_buffer.img, &mem_req);
+		
+		/*Update memory allocation info based on acquired requirements*/
+		mem_alloc_info.allocationSize = mem_req.size;
+		mem_alloc_info.memoryTypeIndex = findMemoryTypeIndex(mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+		
+		/*Allocate and bind memory to given image*/
+		vkAllocateMemory(d, &mem_alloc_info, VK_NULL_HANDLE, &rt.depth_stencil_buffer.mem);
+		vkBindImageMemory(d, rt.depth_stencil_buffer.img, rt.depth_stencil_buffer.mem, 0);
+		
+		/*Create image view for given image*/
+		ds_img_view_create_info.image = rt.depth_stencil_buffer.img;
+		vkCreateImageView(d, &ds_img_view_create_info, VK_NULL_HANDLE, &rt.depth_stencil_buffer.img_view);
+	}
+	
+	
 	/*---Creating render pass---*/
 	
-	VkAttachmentDescription at_desc[2]{};
+	VkAttachmentDescription at_desc[3]{};
 	
-	/*color attachment - swapchain image*/
+	/*color attachment - target image*/
 	at_desc[0].flags = 0;
-	at_desc[0].format = VulkanEngine::get().getSurfaceFormat();
+	at_desc[0].format = image_create_info.format; //use image create info defined earlier in this function
 	at_desc[0].samples = VK_SAMPLE_COUNT_1_BIT;
 	at_desc[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	at_desc[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	at_desc[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	at_desc[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;//VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	at_desc[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 	
-	/*depth stencil attachment*/
+	/*color attachment - swapchain image*/
 	at_desc[1].flags = 0;
-	at_desc[1].format = VK_FORMAT_D32_SFLOAT;
+	at_desc[1].format = VulkanEngine::get().getSurfaceFormat();
 	at_desc[1].samples = VK_SAMPLE_COUNT_1_BIT;
 	at_desc[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	at_desc[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	at_desc[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-	at_desc[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+	at_desc[1].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+	
+	/*depth stencil attachment - depth stencil buffer*/
+	at_desc[2].flags = 0;
+	at_desc[2].format = VK_FORMAT_D32_SFLOAT;
+	at_desc[2].samples = VK_SAMPLE_COUNT_1_BIT;
+	at_desc[2].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	at_desc[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	at_desc[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	at_desc[2].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 	
 	std::vector<VkAttachmentReference> col_at_ref =
 	{
 		{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+		{1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL}
 	};
 	
-	VkAttachmentReference ds_at_ref{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+	VkAttachmentReference ds_at_ref{2, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 	
 	VkSubpassDescription sub_desc{};
 	sub_desc.flags = 0;
@@ -558,7 +572,7 @@ void MyScene::initRenderTargets()
 	render_pass_create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
 	render_pass_create_info.pNext = NULL;
 	render_pass_create_info.flags = 0;
-	render_pass_create_info.attachmentCount = 2;
+	render_pass_create_info.attachmentCount = 3;
 	render_pass_create_info.pAttachments = at_desc;
 	render_pass_create_info.subpassCount = 1;
 	render_pass_create_info.pSubpasses = &sub_desc;
@@ -575,14 +589,15 @@ void MyScene::initRenderTargets()
 	frambuffer_create_info.pNext = NULL;
 	frambuffer_create_info.flags = 0;
 	frambuffer_create_info.renderPass = m_render_pass;
-	frambuffer_create_info.attachmentCount = 2;
+	frambuffer_create_info.attachmentCount = 3;
 	frambuffer_create_info.width = VulkanEngine::get().getSurfaceExtent().width;
 	frambuffer_create_info.height = VulkanEngine::get().getSurfaceExtent().height;
 	frambuffer_create_info.layers = 1;
 	
 	/*Specify clear values used for each framebuffer*/
 	std::vector<VkClearValue> cv = {
-			{VkClearColorValue{0, 0, 0, 0}},
+			{VkClearColorValue{0, 0, 0, 1.0f}},
+			{VkClearColorValue{0, 0, 0, 1.0f}},
 			VkClearValue{.depthStencil=VkClearDepthStencilValue{1.0f}}
 		};
 	
@@ -597,14 +612,11 @@ void MyScene::initRenderTargets()
 	render_pass_begin_info.renderArea.offset = VkOffset2D{0,0};
 	render_pass_begin_info.clearValueCount = cv.size();
 	
-	/*Creting a render target structure for each swapchain image*/
-	m_render_targets.resize(VulkanEngine::get().getSwapchainImageViews().size());
-	
 	/*For each render target...*/
 	for(size_t i = 0; i < m_render_targets.size(); i++)
 	{
 		/*Specify the attachments for each framebuffer as a different swapchain image view and different depth stencil buffer*/
-		VkImageView attachments[] = {VulkanEngine::get().getSwapchainImageViews()[i], m_depth_stencil_image_views[i]};
+		VkImageView attachments[] = {m_render_targets[i].target_image.img_view, VulkanEngine::get().getSwapchainImageViews()[i], m_render_targets[i].depth_stencil_buffer.img_view};
 		frambuffer_create_info.pAttachments = attachments;
 		/*Create a framebuffer for given render target*/
 		vkCreateFramebuffer(VulkanEngine::get().getDevice(), &frambuffer_create_info, VK_NULL_HANDLE, &m_render_targets[i].framebuffer);
@@ -861,17 +873,21 @@ void MyScene::initGraphicsPipeline()
 	multi_state.alphaToCoverageEnable = VK_FALSE;
 	multi_state.alphaToOneEnable = VK_FALSE;
 	
-	VkPipelineColorBlendAttachmentState att_state{};
-	att_state.blendEnable = VK_FALSE;
-	att_state.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	VkPipelineColorBlendAttachmentState att_state[2]{};
+	
+	att_state[0].blendEnable = VK_FALSE;
+	att_state[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	
+	att_state[1].blendEnable = VK_FALSE;
+	att_state[1].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 	
 	VkPipelineColorBlendStateCreateInfo blend_state{};
 	blend_state.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
 	blend_state.pNext = NULL;
 	blend_state.flags = 0;
 	blend_state.logicOpEnable = VK_FALSE;
-	blend_state.attachmentCount = 1;
-	blend_state.pAttachments = &att_state;
+	blend_state.attachmentCount = 2;
+	blend_state.pAttachments = att_state;
 	
 	VkPipelineDepthStencilStateCreateInfo depth_stensil_state{};
 	depth_stensil_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
@@ -998,6 +1014,43 @@ void MyScene::onResize()
 	initSurfaceDependentObjects();
 }
 
+void MyScene::recordFrame(uint32_t id)
+{
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	vkWaitForFences(d, 1, &m_fences[id], VK_TRUE, UINT64_MAX);
+	
+	uint8_t* data;
+	vkMapMemory(d, m_record_images[id].img_mem1, 0, VK_WHOLE_SIZE, 0, (void**)&data);
+	
+	m_recorder.nextFrame(data);
+	
+	vkUnmapMemory(d, m_record_images[id].img_mem1);
+}
+
+void takeSnapshot(VkFence fence, VkDeviceMemory mem)
+{
+	VkDevice d = VulkanEngine::get().getDevice();
+	
+	vkWaitForFences(d, 1, &fence, VK_TRUE, UINT64_MAX);
+	
+	uint8_t* data;
+	vkMapMemory(d, mem, 0, VK_WHOLE_SIZE, 0, (void**)&data);
+	
+	Blob blob(data, video_res_x*video_res_y*4*sizeof(uint8_t));
+	Image img;
+	Geometry g(video_res_x, video_res_y, 0, 0);
+	g.aspect(true);
+	img.size(g);
+	img.magick("RGBA");
+	img.depth(8);
+	img.read(blob);
+	img.magick("PNG");
+	img.write("test.png");
+	
+	vkUnmapMemory(d, mem);
+}
+
 void MyScene::update()
 {
 	float dt = m_timer.getDeltaTime();
@@ -1012,25 +1065,9 @@ void MyScene::update()
 	
 	constants.dt = m_timer.getDeltaTime();
 	constants.vp = m_camera->getViewProj();
-}
-
-void recordFrame(VkFence fence, VkDeviceMemory mem)
-{
-	VkDevice d = VulkanEngine::get().getDevice();
 	
-	vkWaitForFences(d, 1, &fence, VK_TRUE, UINT64_MAX);
-	
-	uint8_t* data;
-	vkMapMemory(d, mem, 0, VK_WHOLE_SIZE, 0, (void**)&data);
-	
-	/*for(int i=0; i<10; i++)
-	{
-		std::cout << (int)data[i*4] << ' ' << (int)data[i*4+1] << ' ' << (int)data[i*4+2] << ' ' << (int)data[i*4+3] << '\n';
-	}*/
-	
-	NextFrame(data);
-	
-	vkUnmapMemory(d, mem);
+	constants.eyeW = m_camera->getCamPosW();
+	constants.curDirNW = glm::normalize(glm::affineInverse(m_camera->getView()) * glm::vec4(m_camera->getCurPosProj(*VulkanEngine::get().getWindow()), 0.0f));
 }
 
 void MyScene::render()
@@ -1064,72 +1101,51 @@ void MyScene::render()
 	
 		vkCmdEndRenderPass(cmd_buf);
 		
-		/*if recording*/
-		/*barrier to move record img to transfer dst optimal*/
-		if(recording)
-		{
-			VkImageMemoryBarrier barr_rec_to_trans_d{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img,
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &barr_rec_to_trans_d);
-			
-			VkImageBlit blit_reg{};
-			blit_reg.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-			blit_reg.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-			blit_reg.srcOffsets[0] = {0, 0, 0};
-			blit_reg.srcOffsets[1] = {e.getSurfaceExtent().width, e.getSurfaceExtent().height, 1};
-			blit_reg.dstOffsets[0] = {0, 0, 0};
-			blit_reg.dstOffsets[1] = {video_res_x, video_res_y, 1};
+	if(recording || snap)
+	{
+		VkImageMemoryBarrier img_to_trans_d{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+		VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img,
+		{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
 		
-			vkCmdBlitImage(cmd_buf, e.getSwapchainImages()[image_index], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_record_images[image_index].img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_reg, VK_FILTER_NEAREST);
+		vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 1, &img_to_trans_d);
 		
-		/*if recording*/
-		/*barrier to move swapchain img to present optimal, move record img to transfer src optimal and move target img to transfer dst optimal*/
-			
-			VkImageMemoryBarrier barr_swp_to_present{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, e.getSwapchainImages()[image_index],
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			VkImageMemoryBarrier barr_rec_to_trans_s{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img,
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			VkImageMemoryBarrier barr_target_to_trans_d{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
-			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img1,
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			VkImageMemoryBarrier imb[] = {barr_swp_to_present, barr_rec_to_trans_s, barr_target_to_trans_d};
-			
-			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 3, imb);
-			
-			VkImageCopy cpy_reg{};
-			cpy_reg.srcOffset = {0,0,0};
-			cpy_reg.dstOffset = {0,0,0};
-			cpy_reg.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-			cpy_reg.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-			cpy_reg.extent = {video_res_x, video_res_y, 1};
-			
-			vkCmdCopyImage(cmd_buf, m_record_images[image_index].img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_record_images[image_index].img1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy_reg);
-			
-			/*if recording*/
-			/*move target image to layout general to later map it*/
-			
-			VkImageMemoryBarrier barr_target_to_general{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_HOST_READ_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img1,
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 0, NULL, 1, &barr_target_to_general);
-		}
-		else/*if not recording no blits and copies, only barrier to move swapchain image to present optimal*/
-		{
-			VkImageMemoryBarrier barr_swp_to_present{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_MEMORY_READ_BIT,
-			VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, e.getSwapchainImages()[image_index],
-			{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
-			
-			vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &barr_swp_to_present);
-		}
-	
+		VkImageBlit blit_reg{};
+		blit_reg.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		blit_reg.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		blit_reg.srcOffsets[0] = {0, 0, 0};
+		blit_reg.srcOffsets[1] = {(int32_t)e.getSurfaceExtent().width, (int32_t)e.getSurfaceExtent().height, 1};
+		blit_reg.dstOffsets[0] = {0, 0, 0};
+		blit_reg.dstOffsets[1] = {video_res_x, video_res_y, 1};
+		
+		vkCmdBlitImage(cmd_buf, m_render_targets[image_index].target_image.img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_record_images[image_index].img, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_reg, VK_FILTER_NEAREST);
+		
+		VkImageMemoryBarrier img_to_trans_s{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img,
+		{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
+		
+		VkImageMemoryBarrier img1_to_trans_d{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+		VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img1,
+		{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
+		
+		VkImageMemoryBarrier bar1[] = {img_to_trans_s, img1_to_trans_d};
+		
+		vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, NULL, 0, NULL, 2, bar1);
+		
+		VkImageCopy cpy{};
+		cpy.srcOffset = {0,0,0};
+		cpy.dstOffset = {0,0,0};
+		cpy.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		cpy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+		cpy.extent = {video_res_x, video_res_y, 1};
+		
+		vkCmdCopyImage(cmd_buf, m_record_images[image_index].img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, m_record_images[image_index].img1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &cpy);
+		
+		VkImageMemoryBarrier img1_to_general{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT,
+		VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, m_record_images[image_index].img1,
+		{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1}};
+		
+		vkCmdPipelineBarrier(cmd_buf, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, NULL, 0, NULL, 1, &img1_to_general);
+	}
 	vkEndCommandBuffer(cmd_buf);
 	
 	VkPipelineStageFlags submit_wait_flags[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
@@ -1160,12 +1176,17 @@ void MyScene::render()
 	
 	vkQueuePresentKHR(m_queue, &present_info);
 	
-	//std::future<void> f;
+	if(snap)
+	{
+		takeSnapshot(m_fences[image_index], m_record_images[image_index].img_mem1);
+		snap = false;
+	}
 	
 	if(recording)
-		//recordFrame(m_fences[image_index], m_record_images[image_index].img_mem);
-		auto f = std::async(std::launch::async, recordFrame, m_fences[image_index], m_record_images[image_index].img_mem1);
+		auto f = std::async(std::launch::async, &MyScene::recordFrame, this, image_index);
 }
+
+bool mov = false;
 
 void MyScene::KeyPressed(keycode_t k)
 {
@@ -1174,20 +1195,27 @@ void MyScene::KeyPressed(keycode_t k)
 		case VKey_ESC:
 			VulkanEngine::get().stop();
 			break;
+		case VKey_Q:
+			mov = !mov;
+			break;
 		case VKey_P:
 			m_timer.toggle();
 			break;
 		case VKey_R:
 			if(!recording)
 			{
-				StartRecording(vid_filename, video_res_x, video_res_y, video_fps);
+				m_recorder.startRecording(vid_filename, video_res_x, video_res_y, video_res_x, video_res_y, video_fps);
 				recording = true;
 			}
 			else
 			{
-				StopRecording();
+				m_recorder.stopRecording();
 				recording = false;
 			}
+			break;
+		case VKey_X:
+			snap = true;
+			break;
 		default:
 		break;
 	}
@@ -1200,14 +1228,16 @@ void MyScene::KeyReleased(keycode_t)
 
 void MyScene::MouseDragged(int16_t dx, int16_t dy)
 {
-	m_camera->rotate(dx*0.01f);
-	m_camera->pitch(dy*0.01f);
+	MouseMoved(dx,dy);
 }
 
 void MyScene::MouseMoved(int16_t dx, int16_t dy)
 {
-	m_camera->rotate(dx*0.01f);
-	m_camera->pitch(dy*0.01f);
+	if(mov)
+	{
+		m_camera->rotate(dx*0.01f);
+		m_camera->pitch(dy*0.01f);
+	}
 }
 
 void MyScene::MousePressed(mbflag_t mb)

@@ -2,6 +2,7 @@
 #define CAMERA_H
 
 #include "vulkan_math.h"
+#include "gui.h"
 
 class Camera
 {
@@ -35,14 +36,13 @@ public:
 	const glm::fmat4x4& getView() const noexcept;
 	const glm::fmat4x4& getProj() const noexcept;
 
-	const glm::vec3& getCamPos() const noexcept;
-	const glm::vec3& getCamLook() const noexcept;
-	const glm::vec3& getCamUp() const noexcept;
-	const glm::vec3& getCamRight() const noexcept;
+	const glm::vec3& getCamPosW() const noexcept;
+	const glm::vec3& getCamLookW() const noexcept;
+	const glm::vec3& getCamUpW() const noexcept;
+	const glm::vec3& getCamRightW() const noexcept;
 
-	//glm::vec2 GetCursorNDCCoords(float vpWidth, float vpHeight, HWND hwnd);
-	//glm::vec3 GetCursorPosProj(POINTF CurNDCCoords);
-	//glm::vec3 GetCursorPosProj(float vpWidth, float vpHeight, HWND hwnd);
+	glm::vec3 getCurPosProj(const std::pair<float, float>& cur_pos_ndc) const;
+	glm::vec3 getCurPosProj(VulkanWindow&) const;
 private:
 
 private:
